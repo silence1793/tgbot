@@ -434,6 +434,50 @@ def schedule_auto_delete(chat_id: int, message_id: int, delay_seconds: int = AUT
     asyncio.create_task(delete_message_later(chat_id, message_id, delay_seconds))
 
 
+async def remember_flow_bot_message(state: FSMContext, message_id: int):
+    data = await state.get_data()
+    ids = data.get("flow_bot_message_ids", [])
+    if message_id not in ids:
+        ids.append(message_id)
+    await state.update_data(flow_bot_message_ids=ids)
+
+
+async def remember_flow_user_message(state: FSMContext, message_id: int):
+    data = await state.get_data()
+    ids = data.get("flow_user_message_ids", [])
+    if message_id not in ids:
+        ids.append(message_id)
+    await state.update_data(flow_user_message_ids=ids)
+
+
+async def reset_flow_with_cleanup(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    message_ids = set()
+    for key, value in data.items():
+        if key.endswith("_message_id") and isinstance(value, int):
+            message_ids.add(value)
+
+    for value in data.get("flow_bot_message_ids", []):
+        if isinstance(value, int):
+            message_ids.add(value)
+
+    for value in data.get("flow_user_message_ids", []):
+        if isinstance(value, int):
+            message_ids.add(value)
+
+    if message.message_id:
+        message_ids.add(message.message_id)
+
+    for msg_id in message_ids:
+        await safe_delete_by_id(bot, message.chat.id, msg_id)
+
+    await state.clear()
+    restart_msg = await message.answer("Начни сначала", reply_markup=main_kb)
+    await asyncio.sleep(60)
+    await safe_delete_message(restart_msg)
+
+
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -542,15 +586,18 @@ async def cmd_find(message: Message, command: CommandObject):
 async def find_button(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(FindRepair.waiting_seal)
-    await message.answer("Введите номер пломбы:", reply_markup=main_kb)
+    ask_msg = await message.answer("Введите номер пломбы:", reply_markup=main_kb)
+    await state.update_data(find_ask_message_id=ask_msg.message_id)
+    await remember_flow_bot_message(state, ask_msg.message_id)
 
 
 @dp.message(FindRepair.waiting_seal)
 async def process_find_seal(message: Message, state: FSMContext):
+    await remember_flow_user_message(state, message.message_id)
     seal_number = (message.text or "").strip()
 
     if not seal_number:
-        await message.answer("Введите номер пломбы:", reply_markup=main_kb)
+        await reset_flow_with_cleanup(message, state)
         return
 
     await state.clear()
@@ -605,6 +652,7 @@ async def edit_seal_callback(callback: CallbackQuery, state: FSMContext):
         reply_markup=main_kb
     )
     await state.update_data(edit_ask_message_id=ask_msg.message_id)
+    await remember_flow_bot_message(state, ask_msg.message_id)
     await state.set_state(EditSeal.waiting_new_seal)
 
     await callback.answer("Введите новую пломбу")
@@ -612,14 +660,10 @@ async def edit_seal_callback(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(EditSeal.waiting_new_seal)
 async def process_edit_seal(message: Message, state: FSMContext):
+    await remember_flow_user_message(state, message.message_id)
     parsed = parse_history_line(message.text or "")
     if not parsed:
-        await message.answer(
-            "Не смог понять данные.\n\n"
-            "Напишите строго так:\n"
-            "<code>новая пломба, сумма, тип ремонта</code>",
-            reply_markup=main_kb
-        )
+        await reset_flow_with_cleanup(message, state)
         return
 
     data = await state.get_data()
@@ -627,11 +671,7 @@ async def process_edit_seal(message: Message, state: FSMContext):
     ask_message_id = data.get("edit_ask_message_id")
 
     if not parent_repair_id:
-        await state.clear()
-        msg = await message.answer("Карточка не найдена. Откройте её заново через поиск.", reply_markup=main_kb)
-        await asyncio.sleep(3)
-        await safe_delete_message(message)
-        await safe_delete_message(msg)
+        await reset_flow_with_cleanup(message, state)
         return
 
     status, old_seal, updated_seal, old_created_at, new_created_at = await update_main_repair_seal(
@@ -646,29 +686,15 @@ async def process_edit_seal(message: Message, state: FSMContext):
     await safe_delete_by_id(bot, message.chat.id, ask_message_id)
 
     if status == "not_found":
-        fail_msg = await message.answer("Карточка не найдена.", reply_markup=main_kb)
-        await state.clear()
-        await asyncio.sleep(3)
-        await safe_delete_message(fail_msg)
+        await reset_flow_with_cleanup(message, state)
         return
 
     if status == "same":
-        same_msg = await message.answer(
-            f"Пломба уже <b>{old_seal}</b>. Ничего менять не нужно.",
-            reply_markup=main_kb
-        )
-        await state.clear()
-        await asyncio.sleep(3)
-        await safe_delete_message(same_msg)
-        await send_main_menu(message)
+        await reset_flow_with_cleanup(message, state)
         return
 
     if status == "duplicate":
-        await message.answer(
-            f"Пломба <b>{parsed['seal_number']}</b> уже есть в базе.\n"
-            "Введите другую пломбу.",
-            reply_markup=main_kb
-        )
+        await reset_flow_with_cleanup(message, state)
         return
 
     await state.clear()
@@ -703,11 +729,13 @@ async def cmd_add(message: Message, command: CommandObject, state: FSMContext):
     )
 
     await state.update_data(add_ask_message_id=ask_msg.message_id)
+    await remember_flow_bot_message(state, ask_msg.message_id)
     await state.set_state(AddHistory.waiting_photo)
 
 
 @dp.message(AddHistory.waiting_photo, F.photo)
 async def handle_add_photo(message: Message, state: FSMContext):
+    await remember_flow_user_message(state, message.message_id)
     photo_file_id = message.photo[-1].file_id
     data = await state.get_data()
     old_ask_message_id = data.get("add_ask_message_id")
@@ -724,6 +752,7 @@ async def handle_add_photo(message: Message, state: FSMContext):
     )
 
     await state.update_data(history_data_ask_message_id=ask_msg.message_id)
+    await remember_flow_bot_message(state, ask_msg.message_id)
     await state.set_state(AddHistory.waiting_data)
 
     await safe_delete_message(message)
@@ -731,27 +760,18 @@ async def handle_add_photo(message: Message, state: FSMContext):
 
 
 @dp.message(AddHistory.waiting_photo)
-async def handle_add_photo_invalid(message: Message):
-    warn_msg = await message.answer("Нужно отправить именно фото.", reply_markup=main_kb)
-    await asyncio.sleep(3)
-    await safe_delete_message(warn_msg)
+async def handle_add_photo_invalid(message: Message, state: FSMContext):
+    await remember_flow_user_message(state, message.message_id)
+    await reset_flow_with_cleanup(message, state)
 
 
 @dp.message(AddHistory.waiting_data)
 async def handle_add_data(message: Message, state: FSMContext):
+    await remember_flow_user_message(state, message.message_id)
     parsed = parse_history_line(message.text or "")
 
     if not parsed:
-        warn_msg = await message.answer(
-            "Не смог понять данные.\n\n"
-            "Напиши строго так:\n"
-            "<code>новая пломба, сумма, что сделал</code>\n\n"
-            "Пример:\n"
-            "<code>1881, 2500, заменил разъем питания</code>",
-            reply_markup=main_kb
-        )
-        await asyncio.sleep(4)
-        await safe_delete_message(warn_msg)
+        await reset_flow_with_cleanup(message, state)
         return
 
     data = await state.get_data()
@@ -760,19 +780,11 @@ async def handle_add_data(message: Message, state: FSMContext):
     ask_message_id = data.get("history_data_ask_message_id")
 
     if not parent_repair_id or not photo_file_id:
-        await state.clear()
-        msg = await message.answer("Что-то потерялось. Начни заново через /add 1542", reply_markup=main_kb)
-        await asyncio.sleep(3)
-        await safe_delete_message(message)
-        await safe_delete_message(msg)
+        await reset_flow_with_cleanup(message, state)
         return
 
     if await seal_exists_anywhere(message.from_user.id, parsed["seal_number"]):
-        warn_msg = await message.answer(
-            f"Пломба <b>{parsed['seal_number']}</b> уже есть в базе.\n"
-            "Укажите другую пломбу.",
-            reply_markup=main_kb
-        )
+        await reset_flow_with_cleanup(message, state)
         return
 
     await save_history(
@@ -805,11 +817,14 @@ async def handle_add_data(message: Message, state: FSMContext):
 async def new_repair_button(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(AddRepair.waiting_photo)
-    await message.answer("Отправьте фото.", reply_markup=main_kb)
+    ask_msg = await message.answer("Отправьте фото.", reply_markup=main_kb)
+    await state.update_data(new_repair_ask_message_id=ask_msg.message_id)
+    await remember_flow_bot_message(state, ask_msg.message_id)
 
 
 @dp.message(AddRepair.waiting_photo, F.photo)
 async def handle_new_photo_from_state(message: Message, state: FSMContext):
+    await remember_flow_user_message(state, message.message_id)
     photo_file_id = message.photo[-1].file_id
     await state.update_data(photo_file_id=photo_file_id)
 
@@ -823,33 +838,25 @@ async def handle_new_photo_from_state(message: Message, state: FSMContext):
     )
 
     await state.update_data(ask_message_id=ask_msg.message_id)
+    await remember_flow_bot_message(state, ask_msg.message_id)
     await state.set_state(AddRepair.waiting_data)
 
     await safe_delete_message(message)
 
 
 @dp.message(AddRepair.waiting_photo)
-async def handle_new_photo_invalid(message: Message):
-    warn_msg = await message.answer("Нужно отправить именно фото.", reply_markup=main_kb)
-    await asyncio.sleep(3)
-    await safe_delete_message(warn_msg)
+async def handle_new_photo_invalid(message: Message, state: FSMContext):
+    await remember_flow_user_message(state, message.message_id)
+    await reset_flow_with_cleanup(message, state)
 
 
 @dp.message(AddRepair.waiting_data)
 async def handle_new_data(message: Message, state: FSMContext):
+    await remember_flow_user_message(state, message.message_id)
     parsed = parse_new_repair_line(message.text or "")
 
     if not parsed:
-        warn_msg = await message.answer(
-            "Не смог понять данные.\n\n"
-            "Напиши строго так:\n"
-            "<code>номер пломбы, сумма, тип ремонта</code>\n\n"
-            "Пример:\n"
-            "<code>1542, 3500, замена блока питания</code>",
-            reply_markup=main_kb
-        )
-        await asyncio.sleep(4)
-        await safe_delete_message(warn_msg)
+        await reset_flow_with_cleanup(message, state)
         return
 
     data = await state.get_data()
@@ -857,19 +864,11 @@ async def handle_new_data(message: Message, state: FSMContext):
     ask_message_id = data.get("ask_message_id")
 
     if not photo_file_id:
-        await state.clear()
-        msg = await message.answer("Сначала отправь фото.", reply_markup=main_kb)
-        await asyncio.sleep(3)
-        await safe_delete_message(message)
-        await safe_delete_message(msg)
+        await reset_flow_with_cleanup(message, state)
         return
 
     if await seal_exists_anywhere(message.from_user.id, parsed["seal_number"]):
-        warn_msg = await message.answer(
-            f"Пломба <b>{parsed['seal_number']}</b> уже есть в базе.\n"
-            "Новый ремонт с такой пломбой создать нельзя.",
-            reply_markup=main_kb
-        )
+        await reset_flow_with_cleanup(message, state)
         return
 
     await save_repair(
