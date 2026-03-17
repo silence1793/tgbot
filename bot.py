@@ -299,9 +299,19 @@ async def get_main_repair_seal(user_id: int, parent_repair_id: int):
         return row[0]
 
 
-async def update_main_repair_seal(user_id: int, parent_repair_id: int, new_seal_number: str):
+async def update_main_repair_seal(
+    user_id: int,
+    parent_repair_id: int,
+    new_seal_number: str,
+    new_amount: str,
+    new_work_done: str
+):
     new_seal_number = (new_seal_number or "").strip()
+    new_amount = (new_amount or "").strip()
+    new_work_done = (new_work_done or "").strip()
     if not new_seal_number:
+        return "invalid", None, None, None, None
+    if not new_amount or not new_work_done:
         return "invalid", None, None, None, None
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -329,8 +339,6 @@ async def update_main_repair_seal(user_id: int, parent_repair_id: int, new_seal_
         old_seal_number = (row[0] or "").strip()
         old_seal_created_at = row[1]
         current_photo_file_id = row[2]
-        current_work_done = row[3]
-        current_amount = row[4]
         if old_seal_number == new_seal_number:
             return "same", old_seal_number, new_seal_number, old_seal_created_at, old_seal_created_at
 
@@ -359,8 +367,8 @@ async def update_main_repair_seal(user_id: int, parent_repair_id: int, new_seal_
             user_id,
             current_photo_file_id,
             new_seal_number,
-            current_work_done,
-            current_amount
+            new_work_done,
+            new_amount
         ))
 
         await db.commit()
@@ -486,48 +494,38 @@ async def show_card_by_seal(message: Message, user_id: int, seal_number: str):
         schedule_auto_delete(message.chat.id, msg.message_id)
         return
 
-    first_row = history_rows[0]
-    base_seal = first_row[2]
+    latest_row = history_rows[-1]
+    _, latest_photo_file_id, _, latest_work_done, latest_amount, _, _ = latest_row
 
-    header = await message.answer(
-        f"<b>История по карточке</b>\n"
-        f"Основная пломба: <b>{base_seal}</b>\n"
-        f"Этапов: <b>{len(history_rows)}</b>",
-        reply_markup=main_kb
+    seal_lines = []
+    for index, row in enumerate(history_rows):
+        created_at, _, hist_seal, _, _, _, _ = row
+        if index == 0:
+            seal_lines.append(f"Пломба: {hist_seal} ({created_at})")
+        else:
+            seal_lines.append(f"{hist_seal} ({created_at})")
+
+    seals_block = "\n".join(seal_lines)
+    caption = (
+        f"{seals_block}\n"
+        f"Сумма: {latest_amount}\n"
+        f"Тип ремонта: {latest_work_done}"
     )
 
-    shown_ids = [header.message_id]
-
-    for index, row in enumerate(history_rows, start=1):
-        created_at, photo_file_id, hist_seal, work_done, amount, record_type, _ = row
-
-        stage_title = f"Этап {index} (первичный ремонт)" if record_type == "main" else f"Этап {index} (повторный ремонт)"
-
-        caption = (
-            f"<b>{stage_title}</b>\n"
-            f"<b>Дата:</b> {created_at}\n"
-            f"<b>Пломба:</b> {hist_seal}\n"
-            f"<b>Сумма:</b> {amount}\n"
-            f"<b>Ремонт:</b> {work_done}"
+    if latest_photo_file_id:
+        card_msg = await message.answer_photo(
+            photo=latest_photo_file_id,
+            caption=caption,
+            reply_markup=card_actions_kb(parent_repair_id)
+        )
+    else:
+        card_msg = await message.answer(
+            caption,
+            reply_markup=card_actions_kb(parent_repair_id)
         )
 
-        if photo_file_id:
-            msg = await message.answer_photo(photo=photo_file_id, caption=caption)
-        else:
-            msg = await message.answer(caption)
-
-        shown_ids.append(msg.message_id)
-
-    action_msg = await message.answer(
-        "Что сделать с этой карточкой?",
-        reply_markup=card_actions_kb(parent_repair_id)
-    )
-    shown_ids.append(action_msg.message_id)
-
-    for shown_id in shown_ids:
-        schedule_auto_delete(message.chat.id, shown_id)
-
-    return shown_ids
+    schedule_auto_delete(message.chat.id, card_msg.message_id)
+    return [card_msg.message_id]
 
 
 @dp.message(Command("find"))
@@ -599,8 +597,11 @@ async def edit_seal_callback(callback: CallbackQuery, state: FSMContext):
     await state.update_data(edit_parent_repair_id=parent_repair_id)
 
     ask_msg = await callback.message.answer(
-        "✏️ Введите новую пломбу для этой карточки.\n"
-        f"Текущая пломба: <b>{current_seal}</b>",
+        "✏️ Введите новые данные одной строкой:\n"
+        "<code>новая пломба, сумма, тип ремонта</code>\n\n"
+        f"Текущая пломба: <b>{current_seal}</b>\n"
+        "Пример:\n"
+        "<code>321, 4500, замена стика</code>",
         reply_markup=main_kb
     )
     await state.update_data(edit_ask_message_id=ask_msg.message_id)
@@ -611,12 +612,14 @@ async def edit_seal_callback(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(EditSeal.waiting_new_seal)
 async def process_edit_seal(message: Message, state: FSMContext):
-    new_seal_number = (message.text or "").strip()
-
-    if not new_seal_number:
-        warn_msg = await message.answer("Введите номер пломбы текстом.", reply_markup=main_kb)
-        await asyncio.sleep(3)
-        await safe_delete_message(warn_msg)
+    parsed = parse_history_line(message.text or "")
+    if not parsed:
+        await message.answer(
+            "Не смог понять данные.\n\n"
+            "Напишите строго так:\n"
+            "<code>новая пломба, сумма, тип ремонта</code>",
+            reply_markup=main_kb
+        )
         return
 
     data = await state.get_data()
@@ -634,7 +637,9 @@ async def process_edit_seal(message: Message, state: FSMContext):
     status, old_seal, updated_seal, old_created_at, new_created_at = await update_main_repair_seal(
         user_id=message.from_user.id,
         parent_repair_id=parent_repair_id,
-        new_seal_number=new_seal_number
+        new_seal_number=parsed["seal_number"],
+        new_amount=parsed["amount"],
+        new_work_done=parsed["work_done"]
     )
 
     await safe_delete_message(message)
@@ -660,25 +665,14 @@ async def process_edit_seal(message: Message, state: FSMContext):
 
     if status == "duplicate":
         await message.answer(
-            f"Пломба <b>{new_seal_number}</b> уже есть в базе.\n"
+            f"Пломба <b>{parsed['seal_number']}</b> уже есть в базе.\n"
             "Введите другую пломбу.",
             reply_markup=main_kb
         )
         return
 
-    ok_msg = await message.answer(
-        "✅ Пломба обновлена\n"
-        f"Старая пломба: <b>{old_seal}</b>\n"
-        f"Дата старой: <b>{old_created_at}</b>\n\n"
-        f"Новая пломба: <b>{updated_seal}</b>\n"
-        f"Дата новой: <b>{new_created_at}</b>\n\n"
-        "Теперь поиск работает по старой и новой пломбе.",
-        reply_markup=main_kb
-    )
     await state.clear()
-    await asyncio.sleep(3)
-    await safe_delete_message(ok_msg)
-    await send_main_menu(message)
+    await show_card_by_seal(message, message.from_user.id, updated_seal)
 
 
 @dp.message(Command("add"))
