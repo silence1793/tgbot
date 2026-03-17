@@ -6,6 +6,7 @@ import aiosqlite
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
+from aiogram import BaseMiddleware
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, CommandObject
@@ -24,6 +25,11 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = "repairs.db"
 AUTO_DELETE_SECONDS = 300
+CHAT_CLEANUP_SECONDS = 180
+CHAT_SWEEP_BACK_MESSAGES = 500
+
+chat_last_message_id: dict[int, int] = {}
+chat_cleanup_tasks: dict[int, asyncio.Task] = {}
 
 if not BOT_TOKEN:
     raise ValueError("Не найден BOT_TOKEN")
@@ -423,6 +429,34 @@ async def safe_delete_by_id(bot: Bot, chat_id: int, message_id):
         pass
 
 
+async def purge_chat_history(chat_id: int):
+    last_id = chat_last_message_id.get(chat_id)
+    if not last_id:
+        return
+
+    start_id = max(1, last_id - CHAT_SWEEP_BACK_MESSAGES)
+    for msg_id in range(last_id, start_id - 1, -1):
+        await safe_delete_by_id(bot, chat_id, msg_id)
+
+
+async def delayed_chat_cleanup(chat_id: int, anchor_message_id: int):
+    await asyncio.sleep(CHAT_CLEANUP_SECONDS)
+    if chat_last_message_id.get(chat_id) != anchor_message_id:
+        return
+    await purge_chat_history(chat_id)
+
+
+def reschedule_chat_cleanup(chat_id: int):
+    task = chat_cleanup_tasks.get(chat_id)
+    if task and not task.done():
+        task.cancel()
+
+    anchor = chat_last_message_id.get(chat_id, 0)
+    chat_cleanup_tasks[chat_id] = asyncio.create_task(
+        delayed_chat_cleanup(chat_id, anchor)
+    )
+
+
 async def delete_message_later(chat_id: int, message_id: int, delay_seconds: int = AUTO_DELETE_SECONDS):
     await asyncio.sleep(delay_seconds)
     await safe_delete_by_id(bot, chat_id, message_id)
@@ -478,11 +512,34 @@ async def reset_flow_with_cleanup(message: Message, state: FSMContext):
     await safe_delete_message(restart_msg)
 
 
+class ActivityCleanupMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        chat_id = None
+        message_id = None
+
+        if isinstance(event, Message):
+            chat_id = event.chat.id
+            message_id = event.message_id
+        elif isinstance(event, CallbackQuery) and event.message:
+            chat_id = event.message.chat.id
+            message_id = event.message.message_id
+
+        if chat_id and message_id:
+            current_last = chat_last_message_id.get(chat_id, 0)
+            if message_id > current_last:
+                chat_last_message_id[chat_id] = message_id
+            reschedule_chat_cleanup(chat_id)
+
+        return await handler(event, data)
+
+
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 dp = Dispatcher()
+dp.message.outer_middleware(ActivityCleanupMiddleware())
+dp.callback_query.outer_middleware(ActivityCleanupMiddleware())
 
 
 @dp.message(Command("start"))
