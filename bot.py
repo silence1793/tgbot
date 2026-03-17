@@ -23,6 +23,7 @@ from aiogram.types import (
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = "repairs.db"
+AUTO_DELETE_SECONDS = 300
 
 if not BOT_TOKEN:
     raise ValueError("Не найден BOT_TOKEN")
@@ -50,14 +51,22 @@ class FindRepair(StatesGroup):
     waiting_seal = State()
 
 
+class EditSeal(StatesGroup):
+    waiting_new_seal = State()
+
+
 def today_str():
     return datetime.now().strftime("%d.%m.%Y")
 
 
-def delete_card_kb(parent_repair_id: int):
+def card_actions_kb(parent_repair_id: int):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(
+                    text="✏️ Изменить пломбу",
+                    callback_data=f"edit_seal:{parent_repair_id}"
+                ),
                 InlineKeyboardButton(
                     text="🗑 Удалить карточку",
                     callback_data=f"delete_card:{parent_repair_id}"
@@ -97,6 +106,18 @@ async def init_db():
                 seal_number TEXT NOT NULL,
                 work_done TEXT NOT NULL,
                 amount TEXT,
+                FOREIGN KEY(parent_repair_id) REFERENCES repairs(id)
+            )
+        """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS repair_seal_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_repair_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                seal_number TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(parent_repair_id, seal_number),
                 FOREIGN KEY(parent_repair_id) REFERENCES repairs(id)
             )
         """)
@@ -166,6 +187,18 @@ async def get_repair_by_any_seal(user_id: int, seal_number: str):
 
         cursor = await db.execute("""
             SELECT r.id, r.created_at, r.photo_file_id, r.seal_number, r.work_done, r.amount
+            FROM repair_seal_aliases a
+            JOIN repairs r ON r.id = a.parent_repair_id
+            WHERE a.seal_number = ? AND a.user_id = ? AND r.user_id = ?
+            ORDER BY a.id DESC
+            LIMIT 1
+        """, (seal_number, user_id, user_id))
+        row = await cursor.fetchone()
+        if row:
+            return row
+
+        cursor = await db.execute("""
+            SELECT r.id, r.created_at, r.photo_file_id, r.seal_number, r.work_done, r.amount
             FROM repair_history h
             JOIN repairs r ON r.id = h.parent_repair_id
             WHERE h.seal_number = ? AND r.user_id = ?
@@ -207,9 +240,64 @@ async def delete_repair_card(user_id: int, parent_repair_id: int):
             return False
 
         await db.execute("DELETE FROM repair_history WHERE parent_repair_id = ?", (parent_repair_id,))
+        await db.execute("DELETE FROM repair_seal_aliases WHERE parent_repair_id = ?", (parent_repair_id,))
         await db.execute("DELETE FROM repairs WHERE id = ? AND user_id = ?", (parent_repair_id, user_id))
         await db.commit()
         return True
+
+
+async def get_main_repair_seal(user_id: int, parent_repair_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT seal_number
+            FROM repairs
+            WHERE id = ? AND user_id = ?
+            LIMIT 1
+        """, (parent_repair_id, user_id))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return row[0]
+
+
+async def update_main_repair_seal(user_id: int, parent_repair_id: int, new_seal_number: str):
+    new_seal_number = (new_seal_number or "").strip()
+    if not new_seal_number:
+        return "invalid", None, None
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT seal_number
+            FROM repairs
+            WHERE id = ? AND user_id = ?
+            LIMIT 1
+        """, (parent_repair_id, user_id))
+        row = await cursor.fetchone()
+        if not row:
+            return "not_found", None, None
+
+        old_seal_number = (row[0] or "").strip()
+        if old_seal_number == new_seal_number:
+            return "same", old_seal_number, new_seal_number
+
+        await db.execute("""
+            INSERT OR IGNORE INTO repair_seal_aliases (parent_repair_id, user_id, seal_number, created_at)
+            VALUES (?, ?, ?, ?)
+        """, (parent_repair_id, user_id, old_seal_number, today_str()))
+
+        await db.execute("""
+            INSERT OR IGNORE INTO repair_seal_aliases (parent_repair_id, user_id, seal_number, created_at)
+            VALUES (?, ?, ?, ?)
+        """, (parent_repair_id, user_id, new_seal_number, today_str()))
+
+        await db.execute("""
+            UPDATE repairs
+            SET seal_number = ?
+            WHERE id = ? AND user_id = ?
+        """, (new_seal_number, parent_repair_id, user_id))
+
+        await db.commit()
+        return "updated", old_seal_number, new_seal_number
 
 
 def parse_new_repair_line(text: str):
@@ -260,6 +348,17 @@ async def safe_delete_by_id(bot: Bot, chat_id: int, message_id):
         pass
 
 
+async def delete_message_later(chat_id: int, message_id: int, delay_seconds: int = AUTO_DELETE_SECONDS):
+    await asyncio.sleep(delay_seconds)
+    await safe_delete_by_id(bot, chat_id, message_id)
+
+
+def schedule_auto_delete(chat_id: int, message_id: int, delay_seconds: int = AUTO_DELETE_SECONDS):
+    if not message_id:
+        return
+    asyncio.create_task(delete_message_later(chat_id, message_id, delay_seconds))
+
+
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -286,7 +385,8 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cmd_today(message: Message):
     rows = await get_today_repairs(message.from_user.id)
     if not rows:
-        await message.answer("За сегодня записей нет.", reply_markup=main_kb)
+        msg = await message.answer("За сегодня записей нет.", reply_markup=main_kb)
+        schedule_auto_delete(message.chat.id, msg.message_id)
         return
 
     parts = ["<b>Записи за сегодня:</b>\n"]
@@ -299,21 +399,24 @@ async def cmd_today(message: Message):
             f"Ремонт: {work_done}\n"
         )
 
-    await message.answer("\n".join(parts), reply_markup=main_kb)
+    info_msg = await message.answer("\n".join(parts), reply_markup=main_kb)
+    schedule_auto_delete(message.chat.id, info_msg.message_id)
 
 
 async def show_card_by_seal(message: Message, user_id: int, seal_number: str):
     repair = await get_repair_by_any_seal(user_id, seal_number)
 
     if not repair:
-        await message.answer(f"По пломбе <b>{seal_number}</b> ничего не найдено.", reply_markup=main_kb)
+        msg = await message.answer(f"По пломбе <b>{seal_number}</b> ничего не найдено.", reply_markup=main_kb)
+        schedule_auto_delete(message.chat.id, msg.message_id)
         return
 
     parent_repair_id = repair[0]
     history_rows = await get_repair_history(user_id, parent_repair_id)
 
     if not history_rows:
-        await message.answer(f"По пломбе <b>{seal_number}</b> ничего не найдено.", reply_markup=main_kb)
+        msg = await message.answer(f"По пломбе <b>{seal_number}</b> ничего не найдено.", reply_markup=main_kb)
+        schedule_auto_delete(message.chat.id, msg.message_id)
         return
 
     first_row = history_rows[0]
@@ -350,9 +453,12 @@ async def show_card_by_seal(message: Message, user_id: int, seal_number: str):
 
     action_msg = await message.answer(
         "Что сделать с этой карточкой?",
-        reply_markup=delete_card_kb(parent_repair_id)
+        reply_markup=card_actions_kb(parent_repair_id)
     )
     shown_ids.append(action_msg.message_id)
+
+    for shown_id in shown_ids:
+        schedule_auto_delete(message.chat.id, shown_id)
 
     return shown_ids
 
@@ -407,6 +513,95 @@ async def delete_card_callback(callback: CallbackQuery):
 
     await callback.answer("Удалено")
     await send_main_menu(callback)
+
+
+@dp.callback_query(F.data.startswith("edit_seal:"))
+async def edit_seal_callback(callback: CallbackQuery, state: FSMContext):
+    try:
+        parent_repair_id = int(callback.data.split(":")[1])
+    except Exception:
+        await callback.answer("Ошибка редактирования", show_alert=True)
+        return
+
+    current_seal = await get_main_repair_seal(callback.from_user.id, parent_repair_id)
+    if not current_seal:
+        await callback.answer("Карточка не найдена", show_alert=True)
+        return
+
+    await state.clear()
+    await state.update_data(edit_parent_repair_id=parent_repair_id)
+
+    ask_msg = await callback.message.answer(
+        "✏️ Введите новую пломбу для этой карточки.\n"
+        f"Текущая пломба: <b>{current_seal}</b>",
+        reply_markup=main_kb
+    )
+    await state.update_data(edit_ask_message_id=ask_msg.message_id)
+    await state.set_state(EditSeal.waiting_new_seal)
+
+    await callback.answer("Введите новую пломбу")
+
+
+@dp.message(EditSeal.waiting_new_seal)
+async def process_edit_seal(message: Message, state: FSMContext):
+    new_seal_number = (message.text or "").strip()
+
+    if not new_seal_number:
+        warn_msg = await message.answer("Введите номер пломбы текстом.", reply_markup=main_kb)
+        await asyncio.sleep(3)
+        await safe_delete_message(warn_msg)
+        return
+
+    data = await state.get_data()
+    parent_repair_id = data.get("edit_parent_repair_id")
+    ask_message_id = data.get("edit_ask_message_id")
+
+    if not parent_repair_id:
+        await state.clear()
+        msg = await message.answer("Карточка не найдена. Откройте её заново через поиск.", reply_markup=main_kb)
+        await asyncio.sleep(3)
+        await safe_delete_message(message)
+        await safe_delete_message(msg)
+        return
+
+    status, old_seal, updated_seal = await update_main_repair_seal(
+        user_id=message.from_user.id,
+        parent_repair_id=parent_repair_id,
+        new_seal_number=new_seal_number
+    )
+
+    await safe_delete_message(message)
+    await safe_delete_by_id(bot, message.chat.id, ask_message_id)
+
+    if status == "not_found":
+        fail_msg = await message.answer("Карточка не найдена.", reply_markup=main_kb)
+        await state.clear()
+        await asyncio.sleep(3)
+        await safe_delete_message(fail_msg)
+        return
+
+    if status == "same":
+        same_msg = await message.answer(
+            f"Пломба уже <b>{old_seal}</b>. Ничего менять не нужно.",
+            reply_markup=main_kb
+        )
+        await state.clear()
+        await asyncio.sleep(3)
+        await safe_delete_message(same_msg)
+        await send_main_menu(message)
+        return
+
+    ok_msg = await message.answer(
+        "✅ Пломба обновлена\n"
+        f"Было: <b>{old_seal}</b>\n"
+        f"Стало: <b>{updated_seal}</b>\n\n"
+        "Теперь поиск работает по старой и новой пломбе.",
+        reply_markup=main_kb
+    )
+    await state.clear()
+    await asyncio.sleep(3)
+    await safe_delete_message(ok_msg)
+    await send_main_menu(message)
 
 
 @dp.message(Command("add"))
