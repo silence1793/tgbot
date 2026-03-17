@@ -208,6 +208,13 @@ async def get_repair_by_any_seal(user_id: int, seal_number: str):
         return await cursor.fetchone()
 
 
+async def find_parent_repair_id_by_any_seal(user_id: int, seal_number: str):
+    row = await get_repair_by_any_seal(user_id, seal_number)
+    if not row:
+        return None
+    return row[0]
+
+
 async def get_repair_history(user_id: int, parent_repair_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
@@ -263,32 +270,67 @@ async def get_main_repair_seal(user_id: int, parent_repair_id: int):
 async def update_main_repair_seal(user_id: int, parent_repair_id: int, new_seal_number: str):
     new_seal_number = (new_seal_number or "").strip()
     if not new_seal_number:
-        return "invalid", None, None
+        return "invalid", None, None, None, None
 
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
-            SELECT seal_number
+            SELECT seal_number, created_at
             FROM repairs
             WHERE id = ? AND user_id = ?
             LIMIT 1
         """, (parent_repair_id, user_id))
         row = await cursor.fetchone()
         if not row:
-            return "not_found", None, None
+            return "not_found", None, None, None, None
 
         old_seal_number = (row[0] or "").strip()
+        old_seal_created_at = row[1]
         if old_seal_number == new_seal_number:
-            return "same", old_seal_number, new_seal_number
+            return "same", old_seal_number, new_seal_number, old_seal_created_at, old_seal_created_at
+
+        cursor = await db.execute("""
+            SELECT id
+            FROM repairs
+            WHERE seal_number = ? AND user_id = ? AND id != ?
+            LIMIT 1
+        """, (new_seal_number, user_id, parent_repair_id))
+        duplicate_row = await cursor.fetchone()
+        if duplicate_row:
+            return "duplicate", None, None, None, None
+
+        cursor = await db.execute("""
+            SELECT r.id
+            FROM repair_history h
+            JOIN repairs r ON r.id = h.parent_repair_id
+            WHERE h.seal_number = ? AND r.user_id = ? AND r.id != ?
+            LIMIT 1
+        """, (new_seal_number, user_id, parent_repair_id))
+        duplicate_row = await cursor.fetchone()
+        if duplicate_row:
+            return "duplicate", None, None, None, None
+
+        cursor = await db.execute("""
+            SELECT r.id
+            FROM repair_seal_aliases a
+            JOIN repairs r ON r.id = a.parent_repair_id
+            WHERE a.seal_number = ? AND a.user_id = ? AND r.id != ?
+            LIMIT 1
+        """, (new_seal_number, user_id, parent_repair_id))
+        duplicate_row = await cursor.fetchone()
+        if duplicate_row:
+            return "duplicate", None, None, None, None
+
+        new_seal_created_at = today_str()
 
         await db.execute("""
             INSERT OR IGNORE INTO repair_seal_aliases (parent_repair_id, user_id, seal_number, created_at)
             VALUES (?, ?, ?, ?)
-        """, (parent_repair_id, user_id, old_seal_number, today_str()))
+        """, (parent_repair_id, user_id, old_seal_number, old_seal_created_at))
 
         await db.execute("""
             INSERT OR IGNORE INTO repair_seal_aliases (parent_repair_id, user_id, seal_number, created_at)
             VALUES (?, ?, ?, ?)
-        """, (parent_repair_id, user_id, new_seal_number, today_str()))
+        """, (parent_repair_id, user_id, new_seal_number, new_seal_created_at))
 
         await db.execute("""
             UPDATE repairs
@@ -297,7 +339,7 @@ async def update_main_repair_seal(user_id: int, parent_repair_id: int, new_seal_
         """, (new_seal_number, parent_repair_id, user_id))
 
         await db.commit()
-        return "updated", old_seal_number, new_seal_number
+        return "updated", old_seal_number, new_seal_number, old_seal_created_at, new_seal_created_at
 
 
 def parse_new_repair_line(text: str):
@@ -564,7 +606,7 @@ async def process_edit_seal(message: Message, state: FSMContext):
         await safe_delete_message(msg)
         return
 
-    status, old_seal, updated_seal = await update_main_repair_seal(
+    status, old_seal, updated_seal, old_created_at, new_created_at = await update_main_repair_seal(
         user_id=message.from_user.id,
         parent_repair_id=parent_repair_id,
         new_seal_number=new_seal_number
@@ -591,10 +633,24 @@ async def process_edit_seal(message: Message, state: FSMContext):
         await send_main_menu(message)
         return
 
+    if status == "duplicate":
+        duplicate_msg = await message.answer(
+            f"Пломба <b>{new_seal_number}</b> уже есть в базе.\n"
+            "Введите другую пломбу.",
+            reply_markup=main_kb
+        )
+        await state.clear()
+        await asyncio.sleep(4)
+        await safe_delete_message(duplicate_msg)
+        await send_main_menu(message)
+        return
+
     ok_msg = await message.answer(
         "✅ Пломба обновлена\n"
-        f"Было: <b>{old_seal}</b>\n"
-        f"Стало: <b>{updated_seal}</b>\n\n"
+        f"Старая пломба: <b>{old_seal}</b>\n"
+        f"Дата старой: <b>{old_created_at}</b>\n\n"
+        f"Новая пломба: <b>{updated_seal}</b>\n"
+        f"Дата новой: <b>{new_created_at}</b>\n\n"
         "Теперь поиск работает по старой и новой пломбе.",
         reply_markup=main_kb
     )
@@ -696,6 +752,17 @@ async def handle_add_data(message: Message, state: FSMContext):
         await safe_delete_message(msg)
         return
 
+    duplicate_parent_id = await find_parent_repair_id_by_any_seal(message.from_user.id, parsed["seal_number"])
+    if duplicate_parent_id and duplicate_parent_id != parent_repair_id:
+        warn_msg = await message.answer(
+            f"Пломба <b>{parsed['seal_number']}</b> уже есть в базе.\n"
+            "Укажите другую пломбу.",
+            reply_markup=main_kb
+        )
+        await asyncio.sleep(4)
+        await safe_delete_message(warn_msg)
+        return
+
     await save_history(
         parent_repair_id=parent_repair_id,
         user_id=message.from_user.id,
@@ -783,6 +850,17 @@ async def handle_new_data(message: Message, state: FSMContext):
         await asyncio.sleep(3)
         await safe_delete_message(message)
         await safe_delete_message(msg)
+        return
+
+    duplicate_parent_id = await find_parent_repair_id_by_any_seal(message.from_user.id, parsed["seal_number"])
+    if duplicate_parent_id:
+        warn_msg = await message.answer(
+            f"Пломба <b>{parsed['seal_number']}</b> уже есть в базе.\n"
+            "Новый ремонт с такой пломбой создать нельзя.",
+            reply_markup=main_kb
+        )
+        await asyncio.sleep(4)
+        await safe_delete_message(warn_msg)
         return
 
     await save_repair(
