@@ -19,6 +19,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
+    FSInputFile,
 )
 
 load_dotenv()
@@ -614,8 +615,12 @@ async def show_card_by_seal(message: Message, user_id: int, seal_number: str):
     )
 
     if latest_photo_file_id:
+        photo_to_send = latest_photo_file_id
+        if isinstance(latest_photo_file_id, str) and latest_photo_file_id.startswith("/") and os.path.exists(latest_photo_file_id):
+            photo_to_send = FSInputFile(latest_photo_file_id)
+
         card_msg = await message.answer_photo(
-            photo=latest_photo_file_id,
+            photo=photo_to_send,
             caption=caption,
             reply_markup=card_actions_kb(parent_repair_id)
         )
