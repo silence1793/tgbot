@@ -822,13 +822,53 @@ async def handle_add_photo(message: Message, state: FSMContext):
     await remember_flow_user_message(state, message.message_id)
     photo_file_id = message.photo[-1].file_id
     data = await state.get_data()
+    parent_repair_id = data.get("parent_repair_id")
     old_ask_message_id = data.get("add_ask_message_id")
+
+    parsed_from_caption = parse_history_line(message.caption or "")
+    if parsed_from_caption:
+        if not parent_repair_id:
+            await reset_flow_with_cleanup(message, state)
+            return
+
+        if await seal_exists_anywhere(message.from_user.id, parsed_from_caption["seal_number"]):
+            await reset_flow_with_cleanup(message, state)
+            return
+
+        await save_history(
+            parent_repair_id=parent_repair_id,
+            user_id=message.from_user.id,
+            photo_file_id=photo_file_id,
+            seal_number=parsed_from_caption["seal_number"],
+            work_done=parsed_from_caption["work_done"],
+            amount=parsed_from_caption["amount"]
+        )
+
+        await safe_delete_message(message)
+        await safe_delete_by_id(bot, message.chat.id, old_ask_message_id)
+
+        ok_msg = await message.answer(
+            "✅ Повторный ремонт добавлен\n"
+            f"Новая пломба: {parsed_from_caption['seal_number']}\n"
+            f"Сумма: {parsed_from_caption['amount']}\n"
+            f"Ремонт: {parsed_from_caption['work_done']}",
+            reply_markup=main_kb
+        )
+
+        await state.clear()
+        await asyncio.sleep(2)
+        await safe_delete_message(ok_msg)
+        await send_main_menu(message)
+        return
 
     await state.update_data(history_photo_file_id=photo_file_id)
 
     ask_msg = await message.answer(
         "Фото получено.\n\n"
-        "Теперь напиши одной строкой:\n"
+        "Можно сразу в подписи к фото написать:\n"
+        "<code>новая пломба, сумма, что сделал</code>\n\n"
+        "Или отправить данные следующим сообщением.\n"
+        "Формат:\n"
         "<code>новая пломба, сумма, что сделал</code>\n\n"
         "Пример:\n"
         "<code>1881, 2500, заменил разъем питания</code>",
@@ -910,11 +950,48 @@ async def new_repair_button(message: Message, state: FSMContext):
 async def handle_new_photo_from_state(message: Message, state: FSMContext):
     await remember_flow_user_message(state, message.message_id)
     photo_file_id = message.photo[-1].file_id
+    data = await state.get_data()
+    old_ask_message_id = data.get("new_repair_ask_message_id")
+
+    parsed_from_caption = parse_new_repair_line(message.caption or "")
+    if parsed_from_caption:
+        if await seal_exists_anywhere(message.from_user.id, parsed_from_caption["seal_number"]):
+            await reset_flow_with_cleanup(message, state)
+            return
+
+        await save_repair(
+            user_id=message.from_user.id,
+            photo_file_id=photo_file_id,
+            seal_number=parsed_from_caption["seal_number"],
+            work_done=parsed_from_caption["work_done"],
+            amount=parsed_from_caption["amount"]
+        )
+
+        await safe_delete_message(message)
+        await safe_delete_by_id(bot, message.chat.id, old_ask_message_id)
+
+        ok_msg = await message.answer(
+            "✅ Запись сохранена\n"
+            f"Пломба: {parsed_from_caption['seal_number']}\n"
+            f"Сумма: {parsed_from_caption['amount']}\n"
+            f"Ремонт: {parsed_from_caption['work_done']}",
+            reply_markup=main_kb
+        )
+
+        await state.clear()
+        await asyncio.sleep(2)
+        await safe_delete_message(ok_msg)
+        await send_main_menu(message)
+        return
+
     await state.update_data(photo_file_id=photo_file_id)
 
     ask_msg = await message.answer(
         "Фото получено.\n\n"
-        "Теперь напиши одной строкой:\n"
+        "Можно сразу в подписи к фото написать:\n"
+        "<code>номер пломбы, сумма, тип ремонта</code>\n\n"
+        "Или отправить данные следующим сообщением.\n"
+        "Формат:\n"
         "<code>номер пломбы, сумма, тип ремонта</code>\n\n"
         "Пример:\n"
         "<code>1542, 3500, замена блока питания</code>",
