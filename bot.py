@@ -383,11 +383,23 @@ async def update_main_repair_seal(
 
 
 def parse_new_repair_line(text: str):
-    parts = [p.strip() for p in text.split(",")]
-    if len(parts) != 3:
+    text = (text or "").strip()
+    if not text:
         return None
 
-    seal_number, amount, work_done = parts
+    # Backward compatible: old comma format
+    comma_parts = [p.strip() for p in text.split(",")]
+    if len(comma_parts) == 3:
+        seal_number, amount, work_done = comma_parts
+    else:
+        # New preferred format: each value on a new line
+        line_parts = [p.strip() for p in text.splitlines() if p.strip()]
+        if len(line_parts) < 3:
+            return None
+        seal_number = line_parts[0]
+        amount = line_parts[1]
+        work_done = " ".join(line_parts[2:]).strip()
+
     if not seal_number or not amount or not work_done:
         return None
 
@@ -399,11 +411,21 @@ def parse_new_repair_line(text: str):
 
 
 def parse_history_line(text: str):
-    parts = [p.strip() for p in text.split(",")]
-    if len(parts) != 3:
+    text = (text or "").strip()
+    if not text:
         return None
 
-    seal_number, amount, work_done = parts
+    comma_parts = [p.strip() for p in text.split(",")]
+    if len(comma_parts) == 3:
+        seal_number, amount, work_done = comma_parts
+    else:
+        line_parts = [p.strip() for p in text.splitlines() if p.strip()]
+        if len(line_parts) < 3:
+            return None
+        seal_number = line_parts[0]
+        amount = line_parts[1]
+        work_done = " ".join(line_parts[2:]).strip()
+
     if not seal_number or not amount or not work_done:
         return None
 
