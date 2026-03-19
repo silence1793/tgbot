@@ -388,7 +388,7 @@ def parse_new_repair_line(text: str):
         return None
 
     # Backward compatible: old comma format
-    comma_parts = [p.strip() for p in text.split(",")]
+    comma_parts = [p.strip() for p in text.split(",", 2)]
     if len(comma_parts) == 3:
         seal_number, amount, work_done = comma_parts
     else:
@@ -415,7 +415,7 @@ def parse_history_line(text: str):
     if not text:
         return None
 
-    comma_parts = [p.strip() for p in text.split(",")]
+    comma_parts = [p.strip() for p in text.split(",", 2)]
     if len(comma_parts) == 3:
         seal_number, amount, work_done = comma_parts
     else:
@@ -619,21 +619,35 @@ async def show_card_by_seal(message: Message, user_id: int, seal_number: str):
         return
 
     latest_row = history_rows[-1]
-    _, latest_photo_file_id, _, latest_work_done, latest_amount, _, _ = latest_row
+    _, latest_photo_file_id, _, _, _, _, _ = latest_row
 
-    seal_lines = []
-    for index, row in enumerate(history_rows):
-        created_at, _, hist_seal, _, _, _, _ = row
-        if index == 0:
-            seal_lines.append(f"Пломба: {hist_seal} ({created_at})")
-        else:
-            seal_lines.append(f"{hist_seal} ({created_at})")
+    def build_timeline_block(title: str, items):
+        lines = []
+        for idx, (value, created_at) in enumerate(items):
+            value_text = (value or "—").strip() or "—"
+            date_text = (created_at or "—").strip() or "—"
+            if idx == 0:
+                lines.append(f"{title}: {value_text} ({date_text})")
+            else:
+                lines.append(f"{value_text} ({date_text})")
+        return "\n".join(lines)
 
-    seals_block = "\n".join(seal_lines)
+    seal_items = []
+    amount_items = []
+    work_items = []
+    for row in history_rows:
+        created_at, _, hist_seal, work_done, amount, _, _ = row
+        seal_items.append((hist_seal, created_at))
+        amount_items.append((amount, created_at))
+        work_items.append((work_done, created_at))
+
+    seals_block = build_timeline_block("Пломба", seal_items)
+    amounts_block = build_timeline_block("Сумма", amount_items)
+    works_block = build_timeline_block("Тип ремонта", work_items)
     caption = (
         f"{seals_block}\n"
-        f"Сумма: {latest_amount}\n"
-        f"Тип ремонта: {latest_work_done}"
+        f"{amounts_block}\n"
+        f"{works_block}"
     )
 
     if latest_photo_file_id:
@@ -728,8 +742,11 @@ async def edit_seal_callback(callback: CallbackQuery, state: FSMContext):
     await state.update_data(edit_parent_repair_id=parent_repair_id)
 
     ask_msg = await callback.message.answer(
-        "✏️ Введите новые данные одной строкой:\n"
-        "<code>новая пломба, сумма, тип ремонта</code>\n\n"
+        "✏️ Введите новые данные (в строку или в столбик).\n"
+        "Можно в строку через запятую или в столбик:\n"
+        "<code>новая пломба, сумма, тип ремонта</code>\n"
+        "или\n"
+        "<code>новая пломба\nсумма\nтип ремонта</code>\n\n"
         f"Текущая пломба: <b>{current_seal}</b>\n"
         "Пример:\n"
         "<code>321, 4500, замена стика</code>",
