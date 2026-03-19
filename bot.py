@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, F
 from aiogram import BaseMiddleware
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command, CommandObject
@@ -28,9 +29,11 @@ DB_PATH = "repairs.db"
 AUTO_DELETE_SECONDS = 300
 CHAT_CLEANUP_SECONDS = 180
 CHAT_SWEEP_BACK_MESSAGES = 500
+MAIN_MESSAGE_TEXT = "Я бот записи и учета ремонтов"
 
 chat_last_message_id: dict[int, int] = {}
 chat_cleanup_tasks: dict[int, asyncio.Task] = {}
+chat_main_message_id: dict[int, int] = {}
 
 if not BOT_TOKEN:
     raise ValueError("Не найден BOT_TOKEN")
@@ -85,8 +88,8 @@ def card_actions_kb(parent_repair_id: int):
 
 async def send_main_menu(message: Message | CallbackQuery, text: str = "Выбери действие:"):
     if isinstance(message, CallbackQuery):
-        return await message.message.answer(text, reply_markup=main_kb)
-    return await message.answer(text, reply_markup=main_kb)
+        return await ensure_main_message(message.message.chat.id)
+    return await ensure_main_message(message.chat.id)
 
 
 async def init_db():
@@ -129,7 +132,73 @@ async def init_db():
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS chat_main_messages (
+                chat_id INTEGER PRIMARY KEY,
+                message_id INTEGER NOT NULL
+            )
+        """)
+
         await db.commit()
+
+
+async def get_saved_main_message_id(chat_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT message_id
+            FROM chat_main_messages
+            WHERE chat_id = ?
+            LIMIT 1
+        """, (chat_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return int(row[0])
+
+
+async def save_main_message_id(chat_id: int, message_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO chat_main_messages (chat_id, message_id)
+            VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET message_id = excluded.message_id
+        """, (chat_id, message_id))
+        await db.commit()
+
+    chat_main_message_id[chat_id] = message_id
+
+
+async def ensure_main_message(chat_id: int):
+    message_id = chat_main_message_id.get(chat_id)
+    if not message_id:
+        message_id = await get_saved_main_message_id(chat_id)
+        if message_id:
+            chat_main_message_id[chat_id] = message_id
+
+    if message_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=MAIN_MESSAGE_TEXT,
+                reply_markup=main_kb
+            )
+            return message_id
+        except TelegramBadRequest as e:
+            if "message is not modified" in str(e).lower():
+                return message_id
+        except Exception:
+            pass
+
+    msg = await bot.send_message(chat_id=chat_id, text=MAIN_MESSAGE_TEXT, reply_markup=main_kb)
+    await save_main_message_id(chat_id, msg.message_id)
+    return msg.message_id
+
+
+def is_main_message(chat_id: int, message_id: int):
+    if not chat_id or not message_id:
+        return False
+    return chat_main_message_id.get(chat_id) == message_id
 
 
 async def save_repair(user_id: int, photo_file_id: str, seal_number: str, work_done: str, amount: str):
@@ -437,6 +506,8 @@ def parse_history_line(text: str):
 
 
 async def safe_delete_message(message: Message):
+    if is_main_message(message.chat.id, message.message_id):
+        return
     try:
         await message.delete()
     except Exception:
@@ -445,6 +516,8 @@ async def safe_delete_message(message: Message):
 
 async def safe_delete_by_id(bot: Bot, chat_id: int, message_id):
     if not message_id:
+        return
+    if is_main_message(chat_id, message_id):
         return
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
@@ -548,6 +621,7 @@ class ActivityCleanupMiddleware(BaseMiddleware):
             message_id = event.message.message_id
 
         if chat_id and message_id:
+            await ensure_main_message(chat_id)
             current_last = chat_last_message_id.get(chat_id, 0)
             if message_id > current_last:
                 chat_last_message_id[chat_id] = message_id
@@ -568,15 +642,7 @@ dp.callback_query.outer_middleware(ActivityCleanupMiddleware())
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer(
-        "Привет.\n\n"
-        "🆕 Новый ремонт — создать запись\n"
-        "🔎 Найти — поиск по пломбе\n"
-        "📅 Сегодня — записи за сегодня\n\n"
-        "Для повторного ремонта:\n"
-        "<code>/add 1542</code>",
-        reply_markup=main_kb
-    )
+    await ensure_main_message(message.chat.id)
 
 
 @dp.message(Command("today"))
