@@ -474,43 +474,72 @@ WEBAPP_HTML = """<!doctype html>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root {
-      --bg: #f5f6f8;
+      --bg: #f4f7fb;
       --card: #ffffff;
       --text: #1f2937;
       --muted: #6b7280;
-      --line: #e5e7eb;
-      --accent: #0f766e;
+      --line: #dbe2ea;
+      --accent: #3b82f6;
     }
-    body { margin: 0; background: linear-gradient(180deg, #e8f4f1 0%, var(--bg) 65%); color: var(--text); font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+    body { margin: 0; background: linear-gradient(180deg, #edf4ff 0%, var(--bg) 65%); color: var(--text); font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
     .wrap { max-width: 980px; margin: 0 auto; padding: 16px 16px 92px; }
     .head { background: var(--card); border-radius: 14px; padding: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.06); margin-bottom: 12px; }
     h1 { font-size: 20px; margin: 0 0 6px; }
     .meta { color: var(--muted); font-size: 13px; }
-    .tabs { display: flex; gap: 8px; }
-    .tab-btn { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 7px 12px; font-size: 13px; }
-    .tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .tab-btn {
+      border: 1.5px solid var(--line);
+      background: #fff;
+      border-radius: 14px;
+      padding: 9px 10px;
+      font-size: 14px;
+      min-height: 54px;
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+      justify-items: center;
+      color: var(--muted);
+      transition: .15s ease;
+    }
+    .tab-btn .ico { font-size: 18px; line-height: 1; }
+    .tab-btn .lbl { font-size: 12px; line-height: 1.1; }
+    .tab-btn.active {
+      background: #fff;
+      color: var(--accent);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(59,130,246,.16);
+    }
     .tabs-panel {
       position: fixed;
       left: 0;
       right: 0;
       bottom: 0;
-      background: rgba(245,246,248,.96);
+      background: rgba(255,255,255,.96);
       backdrop-filter: blur(6px);
       border-top: 1px solid var(--line);
       padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
       z-index: 20;
     }
     .tabs-shell { max-width: 980px; margin: 0 auto; }
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0,1fr));
+      gap: 8px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 8px;
+      box-shadow: 0 8px 28px rgba(18,52,86,.08);
+    }
     .switch { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
     .sw-btn { border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 999px; padding: 8px 12px; font-size: 13px; }
-    .sw-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .sw-btn.active { background: #fff; color: var(--accent); border-color: var(--accent); }
     .stats { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-bottom: 12px; }
     .stat { background: var(--card); border-radius: 12px; border: 1px solid var(--line); padding: 10px; }
     .stat .k { color: var(--muted); font-size: 12px; }
     .stat .v { margin-top: 4px; font-size: 18px; font-weight: 700; }
     .stat.clickable { cursor: pointer; transition: .15s transform ease, .15s box-shadow ease; }
     .stat.clickable:active { transform: scale(0.99); }
-    .stat.clickable.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(15,118,110,.15) inset; }
+    .stat.clickable.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,.16) inset; }
     .grid { display: grid; gap: 10px; }
     .cards-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
     .hidden { display: none; }
@@ -546,12 +575,19 @@ WEBAPP_HTML = """<!doctype html>
     <div id="stats" class="stats"></div>
     <div id="cardsList" class="grid cards-grid hidden"></div>
     <div id="ledgerList" class="grid"></div>
+    <div id="settingsView" class="grid hidden">
+      <div class="stat">
+        <div class="k">Настройки</div>
+        <div class="row">Раздел готов. Дальше добавим нужные параметры.</div>
+      </div>
+    </div>
   </div>
   <div class="tabs-panel">
     <div class="tabs-shell">
       <div class="tabs">
-        <button class="tab-btn" data-tab="cards">Карточки</button>
-        <button class="tab-btn active" data-tab="ledger">Учет</button>
+        <button class="tab-btn active" data-tab="ledger"><span class="ico">💵</span><span class="lbl">Учет</span></button>
+        <button class="tab-btn" data-tab="cards"><span class="ico">🔧</span><span class="lbl">Карточки</span></button>
+        <button class="tab-btn" data-tab="settings"><span class="ico">⚙️</span><span class="lbl">Настройки</span></button>
       </div>
     </div>
   </div>
@@ -668,8 +704,14 @@ WEBAPP_HTML = """<!doctype html>
     function applyTab() {
       const cards = document.getElementById("cardsList");
       const ledger = document.getElementById("ledgerList");
+      const settings = document.getElementById("settingsView");
+      const stats = document.getElementById("stats");
+      const switchBox = document.querySelector(".switch");
       cards.classList.toggle("hidden", activeTab !== "cards");
       ledger.classList.toggle("hidden", activeTab !== "ledger");
+      settings.classList.toggle("hidden", activeTab !== "settings");
+      stats.classList.toggle("hidden", activeTab === "settings");
+      switchBox.classList.toggle("hidden", activeTab === "settings");
       document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === activeTab));
       const opsCard = document.getElementById("opsWithAmountCard");
       if (opsCard) opsCard.classList.toggle("active", activeTab === "ledger" && ledgerFilter === "with_amount");
