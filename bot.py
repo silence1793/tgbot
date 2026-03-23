@@ -547,6 +547,22 @@ WEBAPP_HTML = """<!doctype html>
     summary.top { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 4px; cursor: pointer; list-style: none; }
     summary.top::-webkit-details-marker { display: none; }
     .summary-left { display: flex; gap: 10px; align-items: center; min-width: 0; }
+    .summary-right { display: flex; align-items: flex-start; }
+    .edit-btn {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: #64748b;
+      border-radius: 8px;
+      width: 28px;
+      height: 28px;
+      font-size: 15px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .edit-btn:active { transform: scale(.98); }
     .thumb { width: 42px; height: 42px; border-radius: 10px; border: 1px solid var(--line); background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; font-size: 20px; color: #9ca3af; }
     .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .stage-list { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; display: grid; gap: 8px; }
@@ -559,6 +575,51 @@ WEBAPP_HTML = """<!doctype html>
     .plus { color: #065f46; font-weight: 700; }
     .minus { color: #b91c1c; font-weight: 700; }
     .empty { color: var(--muted); text-align: center; padding: 24px; }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15,23,42,.36);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 40;
+      padding: 16px;
+    }
+    .modal-backdrop.show { display: flex; }
+    .modal {
+      width: 100%;
+      max-width: 460px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 20px 45px rgba(15,23,42,.22);
+      padding: 14px;
+    }
+    .modal h3 { margin: 0 0 10px; font-size: 18px; }
+    .form-grid { display: grid; gap: 10px; }
+    .field { display: grid; gap: 6px; }
+    .field label { color: var(--muted); font-size: 12px; }
+    .field input, .field textarea {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 14px;
+      font-family: inherit;
+      background: #fff;
+      color: var(--text);
+      resize: vertical;
+    }
+    .modal-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+    .m-btn {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .m-btn.primary { border-color: var(--accent); color: var(--accent); }
   </style>
 </head>
 <body>
@@ -591,6 +652,33 @@ WEBAPP_HTML = """<!doctype html>
       </div>
     </div>
   </div>
+  <div id="editModalBackdrop" class="modal-backdrop">
+    <div class="modal">
+      <h3>Редактирование карточки</h3>
+      <div class="form-grid">
+        <div class="field">
+          <label for="editSeal">Пломба</label>
+          <input id="editSeal" type="text" />
+        </div>
+        <div class="field">
+          <label for="editAmount">Сумма</label>
+          <input id="editAmount" type="text" />
+        </div>
+        <div class="field">
+          <label for="editWork">Ремонт</label>
+          <textarea id="editWork" rows="2"></textarea>
+        </div>
+        <div class="field">
+          <label for="editPart">Сумма детали</label>
+          <input id="editPart" type="text" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="editCancel" class="m-btn" type="button">Отмена</button>
+        <button id="editSave" class="m-btn primary" type="button">Сохранить</button>
+      </div>
+    </div>
+  </div>
   <script>
     const tg = window.Telegram.WebApp;
     tg.ready();
@@ -598,6 +686,8 @@ WEBAPP_HTML = """<!doctype html>
     let activeTab = "ledger";
     let ledgerFilter = "all";
     let currentData = null;
+    let currentPeriodDays = 7;
+    let editingCardId = null;
 
     function money(v) {
       return (v ?? "0") + " ₽";
@@ -658,6 +748,9 @@ WEBAPP_HTML = """<!doctype html>
                 <div class="date">${card.latest_created_at || "—"}</div>
               </div>
             </div>
+            <div class="summary-right">
+              <button class="edit-btn" data-card-id="${card.card_id}" title="Редактировать">✏️</button>
+            </div>
           </summary>
           <div class="stage-list">
             ${card.stages.map(stage => `
@@ -677,6 +770,14 @@ WEBAPP_HTML = """<!doctype html>
         if (card.latest_has_photo && card.latest_photo_ref) {
           loadThumb(card.latest_photo_ref, `img-${card.card_id}`);
         }
+      });
+
+      list.querySelectorAll(".edit-btn").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openEditModal(Number(btn.dataset.cardId));
+        });
       });
     }
 
@@ -718,6 +819,7 @@ WEBAPP_HTML = """<!doctype html>
     }
 
     async function loadData(periodDays) {
+      currentPeriodDays = periodDays;
       const resp = await fetch("/api/cabinet/repairs", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -756,6 +858,61 @@ WEBAPP_HTML = """<!doctype html>
           document.getElementById("meta").textContent = "Ошибка загрузки данных";
         });
       });
+    });
+
+    function closeEditModal() {
+      editingCardId = null;
+      document.getElementById("editModalBackdrop").classList.remove("show");
+    }
+
+    function openEditModal(cardId) {
+      const cards = (currentData && currentData.cards) || [];
+      const card = cards.find(c => Number(c.card_id) === Number(cardId));
+      if (!card || !card.stages || !card.stages.length) return;
+      const latest = card.stages[card.stages.length - 1];
+      editingCardId = cardId;
+      document.getElementById("editSeal").value = latest.seal_number || "";
+      document.getElementById("editAmount").value = latest.amount || "";
+      document.getElementById("editWork").value = latest.work_done || "";
+      document.getElementById("editPart").value = latest.part_cost || "";
+      document.getElementById("editModalBackdrop").classList.add("show");
+    }
+
+    async function saveCardEdit() {
+      if (!editingCardId) return;
+      const payload = {
+        initData: tg.initData,
+        cardId: editingCardId,
+        sealNumber: document.getElementById("editSeal").value.trim(),
+        amount: document.getElementById("editAmount").value.trim(),
+        workDone: document.getElementById("editWork").value.trim(),
+        partCost: document.getElementById("editPart").value.trim()
+      };
+      const resp = await fetch("/api/cabinet/card/update", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data.ok) {
+        const msg = data && data.error === "duplicate_seal"
+          ? "Такая пломба уже есть в базе"
+          : "Не удалось сохранить изменения";
+        if (tg.showAlert) tg.showAlert(msg); else alert(msg);
+        return;
+      }
+      closeEditModal();
+      await loadData(currentPeriodDays);
+    }
+
+    document.getElementById("editCancel").addEventListener("click", closeEditModal);
+    document.getElementById("editSave").addEventListener("click", () => {
+      saveCardEdit().catch(() => {
+        if (tg.showAlert) tg.showAlert("Ошибка сохранения");
+      });
+    });
+    document.getElementById("editModalBackdrop").addEventListener("click", (e) => {
+      if (e.target.id === "editModalBackdrop") closeEditModal();
     });
 
     loadData(7).catch(() => {
@@ -849,11 +1006,113 @@ async def cabinet_repairs_api(request: web.Request):
     })
 
 
+async def cabinet_update_card_api(request: web.Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
+
+    user_id = validate_webapp_init_data((body or {}).get("initData", ""))
+    if not user_id:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    try:
+        card_id = int((body or {}).get("cardId"))
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_card_id"}, status=400)
+
+    seal_number = ((body or {}).get("sealNumber") or "").strip()
+    amount = ((body or {}).get("amount") or "").strip() or "-"
+    work_done = ((body or {}).get("workDone") or "").strip()
+    part_cost = ((body or {}).get("partCost") or "").strip() or None
+
+    if not seal_number or not work_done:
+        return web.json_response({"ok": False, "error": "invalid_fields"}, status=400)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("""
+            SELECT id, seal_number
+            FROM repairs
+            WHERE id = ? AND user_id = ?
+            LIMIT 1
+        """, (card_id, user_id))
+        main_row = await cur.fetchone()
+        if not main_row:
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+
+        cur = await db.execute("""
+            SELECT id, seal_number
+            FROM repair_history
+            WHERE parent_repair_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+        """, (card_id,))
+        latest_history = await cur.fetchone()
+
+        target_table = "repairs"
+        target_id = card_id
+        previous_seal = (main_row[1] or "").strip()
+        if latest_history:
+            target_table = "repair_history"
+            target_id = int(latest_history[0])
+            previous_seal = (latest_history[1] or "").strip()
+
+        exclude_repairs_id = card_id if target_table == "repairs" else -1
+        exclude_history_id = target_id if target_table == "repair_history" else -1
+
+        cur = await db.execute("""
+            SELECT 1
+            FROM repairs
+            WHERE user_id = ? AND trim(seal_number) = ? AND id != ?
+            LIMIT 1
+        """, (user_id, seal_number, exclude_repairs_id))
+        if await cur.fetchone():
+            return web.json_response({"ok": False, "error": "duplicate_seal"}, status=409)
+
+        cur = await db.execute("""
+            SELECT 1
+            FROM repair_history h
+            JOIN repairs r ON r.id = h.parent_repair_id
+            WHERE r.user_id = ? AND trim(h.seal_number) = ? AND h.id != ?
+            LIMIT 1
+        """, (user_id, seal_number, exclude_history_id))
+        if await cur.fetchone():
+            return web.json_response({"ok": False, "error": "duplicate_seal"}, status=409)
+
+        if target_table == "repair_history":
+            await db.execute("""
+                UPDATE repair_history
+                SET seal_number = ?, amount = ?, work_done = ?, part_cost = ?
+                WHERE id = ?
+            """, (seal_number, amount, work_done, part_cost, target_id))
+        else:
+            await db.execute("""
+                UPDATE repairs
+                SET seal_number = ?, amount = ?, work_done = ?, part_cost = ?
+                WHERE id = ?
+            """, (seal_number, amount, work_done, part_cost, target_id))
+
+        for seal_value in {previous_seal, seal_number}:
+            clean = (seal_value or "").strip()
+            if not clean:
+                continue
+            await db.execute("""
+                INSERT INTO repair_seal_aliases (parent_repair_id, user_id, seal_number, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(parent_repair_id, seal_number) DO NOTHING
+            """, (card_id, user_id, clean, today_str()))
+
+        await db.commit()
+
+    return web.json_response({"ok": True})
+
+
 async def start_webapp_server():
     app = web.Application()
     app.router.add_get("/cabinet", cabinet_page)
     app.router.add_post("/api/cabinet/repairs", cabinet_repairs_api)
     app.router.add_post("/api/cabinet/photo", cabinet_photo_api)
+    app.router.add_post("/api/cabinet/card/update", cabinet_update_card_api)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, WEBAPP_HOST, WEBAPP_PORT)
