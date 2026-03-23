@@ -273,20 +273,11 @@ async def ensure_main_message(chat_id: int):
             await bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=MAIN_MESSAGE_TEXT,
-                reply_markup=main_kb
+                text=MAIN_MESSAGE_TEXT
             )
             return message_id
         except TelegramBadRequest as e:
             if "message is not modified" in str(e).lower():
-                try:
-                    await bot.edit_message_reply_markup(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        reply_markup=main_kb
-                    )
-                except Exception:
-                    pass
                 return message_id
         except Exception:
             pass
