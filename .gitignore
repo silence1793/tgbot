@@ -1,1 +1,4 @@
 .env
+repairs.db
+__pycache__/
+.DS_Store

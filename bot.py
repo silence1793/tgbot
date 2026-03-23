@@ -33,7 +33,7 @@ from aiogram.types import (
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DB_PATH = "repairs.db"
+DB_PATH = os.getenv("DB_PATH", "repairs.db")
 AUTO_DELETE_SECONDS = 300
 CHAT_CLEANUP_SECONDS = 180
 CHAT_SWEEP_BACK_MESSAGES = 5000
