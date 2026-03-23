@@ -1509,6 +1509,7 @@ async def cmd_find(message: Message, state: FSMContext, command: CommandObject):
 
 
 @dp.message(F.text == "🔎 Найти")
+@dp.message(F.text.regexp(r"(?i)^\s*(?:(?:🔎|🔍)\s*)?(?:найти|поиск)\s*$"))
 async def find_button(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(FindRepair.waiting_seal)
@@ -1789,6 +1790,7 @@ async def handle_add_data(message: Message, state: FSMContext):
 
 @dp.message(Command("new"))
 @dp.message(F.text == "🆕 Новый ремонт")
+@dp.message(F.text.regexp(r"(?i)^\s*(?:🆕\s*)?новый\s+ремонт\s*$"))
 async def new_repair_button(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(AddRepair.waiting_photo)
