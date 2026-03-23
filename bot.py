@@ -568,6 +568,23 @@ WEBAPP_HTML = """<!doctype html>
     .stat.clickable { cursor: pointer; transition: .15s transform ease, .15s box-shadow ease; }
     .stat.clickable:active { transform: scale(0.99); }
     .stat.clickable.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,.16) inset; }
+    .cards-toolbar { margin-bottom: 12px; }
+    .search-input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+      color: var(--text);
+      padding: 12px 14px;
+      font-size: 15px;
+      outline: none;
+      box-shadow: 0 8px 24px rgba(18,52,86,.05);
+    }
+    .search-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(59,130,246,.12);
+    }
     .grid { display: grid; gap: 10px; }
     .cards-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
     .hidden { display: none; }
@@ -663,6 +680,9 @@ WEBAPP_HTML = """<!doctype html>
       </div>
     </div>
     <div id="stats" class="stats"></div>
+    <div id="cardsSearchWrap" class="cards-toolbar hidden">
+      <input id="cardsSearch" class="search-input" type="text" placeholder="Поиск по карточкам" />
+    </div>
     <div id="cardsList" class="grid cards-grid hidden"></div>
     <div id="ledgerList" class="grid"></div>
     <div id="settingsView" class="grid hidden">
@@ -717,9 +737,32 @@ WEBAPP_HTML = """<!doctype html>
     let currentData = null;
     let currentPeriodDays = 7;
     let editingCardId = null;
+    let currentCardQuery = "";
 
     function money(v) {
       return (v ?? "0") + " ₽";
+    }
+
+    function normalizeSearchText(value) {
+      return String(value || "").toLowerCase().trim();
+    }
+
+    function filterCards(cards) {
+      const query = normalizeSearchText(currentCardQuery);
+      if (!query) return cards;
+      return cards.filter(card => {
+        const chunks = [];
+        chunks.push(card.latest_seal_number || "");
+        (card.all_seals_view || []).forEach(seal => chunks.push(seal));
+        (card.stages || []).forEach(stage => {
+          chunks.push(stage.created_at || "");
+          chunks.push(stage.seal_number || "");
+          chunks.push(stage.amount || "");
+          chunks.push(stage.part_cost || "");
+          chunks.push(stage.work_done || "");
+        });
+        return normalizeSearchText(chunks.join(" ")).includes(query);
+      });
     }
 
     function renderSummary(summary) {
@@ -761,7 +804,9 @@ WEBAPP_HTML = """<!doctype html>
     function renderCards(cards) {
       const list = document.getElementById("cardsList");
       if (!cards.length) {
-        list.innerHTML = '<div class="empty">Пока нет записей</div>';
+        list.innerHTML = currentCardQuery
+          ? '<div class="empty">По этому запросу ничего не найдено</div>'
+          : '<div class="empty">Пока нет записей</div>';
         return;
       }
 
@@ -840,9 +885,11 @@ WEBAPP_HTML = """<!doctype html>
       const settings = document.getElementById("settingsView");
       const stats = document.getElementById("stats");
       const switchBox = document.querySelector(".switch");
+      const cardsSearchWrap = document.getElementById("cardsSearchWrap");
       cards.classList.toggle("hidden", activeTab !== "cards");
       ledger.classList.toggle("hidden", activeTab !== "ledger");
       settings.classList.toggle("hidden", activeTab !== "settings");
+      cardsSearchWrap.classList.toggle("hidden", activeTab !== "cards");
       stats.classList.toggle("hidden", activeTab === "settings");
       switchBox.classList.toggle("hidden", activeTab === "settings");
       document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === activeTab));
@@ -868,7 +915,7 @@ WEBAPP_HTML = """<!doctype html>
       const meta = document.getElementById("meta");
       meta.textContent = "Карточек: " + data.count + " · Период: " + data.period_label;
       renderSummary(data.summary);
-      renderCards(data.cards || []);
+      renderCards(filterCards(data.cards || []));
       renderLedger(data.ledger || []);
       applyTab();
     }
@@ -878,7 +925,10 @@ WEBAPP_HTML = """<!doctype html>
         activeTab = btn.dataset.tab;
         if (activeTab === "ledger") ledgerFilter = "all";
         applyTab();
-        if (currentData) renderLedger(currentData.ledger || []);
+        if (currentData) {
+          renderCards(filterCards(currentData.cards || []));
+          renderLedger(currentData.ledger || []);
+        }
       });
     });
 
@@ -945,6 +995,10 @@ WEBAPP_HTML = """<!doctype html>
     });
     document.getElementById("editModalBackdrop").addEventListener("click", (e) => {
       if (e.target.id === "editModalBackdrop") closeEditModal();
+    });
+    document.getElementById("cardsSearch").addEventListener("input", (e) => {
+      currentCardQuery = e.target.value || "";
+      if (currentData) renderCards(filterCards(currentData.cards || []));
     });
 
     loadData(7).catch(() => {
