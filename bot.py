@@ -168,9 +168,7 @@ def card_actions_kb(parent_repair_id: int):
 
 
 async def send_main_menu(message: Message | CallbackQuery, text: str = "Выбери действие:"):
-    if isinstance(message, CallbackQuery):
-        return await ensure_main_message(message.message.chat.id)
-    return await ensure_main_message(message.chat.id)
+    return None
 
 
 async def init_db():
@@ -249,6 +247,16 @@ async def get_saved_main_message_id(chat_id: int):
         return int(row[0])
 
 
+async def get_saved_main_chat_ids():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT chat_id
+            FROM chat_main_messages
+        """)
+        rows = await cursor.fetchall()
+        return [int(row[0]) for row in rows if row and row[0] is not None]
+
+
 async def save_main_message_id(chat_id: int, message_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
@@ -261,30 +269,42 @@ async def save_main_message_id(chat_id: int, message_id: int):
     chat_main_message_id[chat_id] = message_id
 
 
-async def ensure_main_message(chat_id: int):
+async def load_main_message_id(chat_id: int):
     message_id = chat_main_message_id.get(chat_id)
     if not message_id:
         message_id = await get_saved_main_message_id(chat_id)
         if message_id:
             chat_main_message_id[chat_id] = message_id
+    return message_id
+
+
+async def ensure_main_message(chat_id: int):
+    message_id = await load_main_message_id(chat_id)
 
     if message_id:
-        try:
-            await bot.edit_message_reply_markup(
-                chat_id=chat_id,
-                message_id=message_id,
-                reply_markup=main_kb
-            )
-            return message_id
-        except TelegramBadRequest as e:
-            if "message is not modified" in str(e).lower():
-                return message_id
-        except Exception:
-            pass
+        return message_id
 
     msg = await bot.send_message(chat_id=chat_id, text=MAIN_MESSAGE_TEXT, reply_markup=main_kb)
     await save_main_message_id(chat_id, msg.message_id)
     return msg.message_id
+
+
+async def refresh_main_message(chat_id: int):
+    old_message_id = await load_main_message_id(chat_id)
+    if old_message_id:
+        await safe_delete_by_id(bot, chat_id, old_message_id, allow_main_message=True)
+
+    msg = await bot.send_message(chat_id=chat_id, text=MAIN_MESSAGE_TEXT, reply_markup=main_kb)
+    await save_main_message_id(chat_id, msg.message_id)
+    return msg.message_id
+
+
+async def refresh_saved_main_messages():
+    for chat_id in await get_saved_main_chat_ids():
+        try:
+            await refresh_main_message(chat_id)
+        except Exception:
+            continue
 
 
 def is_main_message(chat_id: int, message_id: int):
@@ -1484,8 +1504,13 @@ def parse_quick_line(text: str):
     }
 
 
-async def safe_delete_message(message: Message):
+async def safe_delete_message(message: Message, allow_main_message: bool = False):
     if is_main_message(message.chat.id, message.message_id):
+        if allow_main_message:
+            try:
+                await message.delete()
+            except Exception:
+                pass
         return
     try:
         await message.delete()
@@ -1493,10 +1518,15 @@ async def safe_delete_message(message: Message):
         pass
 
 
-async def safe_delete_by_id(bot: Bot, chat_id: int, message_id):
+async def safe_delete_by_id(bot: Bot, chat_id: int, message_id, allow_main_message: bool = False):
     if not message_id:
         return
     if is_main_message(chat_id, message_id):
+        if allow_main_message:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
         return
     try:
         await bot.delete_message(chat_id=chat_id, message_id=message_id)
@@ -1505,6 +1535,7 @@ async def safe_delete_by_id(bot: Bot, chat_id: int, message_id):
 
 
 async def purge_chat_history(chat_id: int):
+    await load_main_message_id(chat_id)
     last_id = chat_last_message_id.get(chat_id)
     if not last_id:
         return
@@ -1602,7 +1633,6 @@ class ActivityCleanupMiddleware(BaseMiddleware):
         if chat_id and message_id:
             if chat_id not in webapp_menu_set_chats:
                 await set_webapp_menu_button(chat_id)
-            await ensure_main_message(chat_id)
             current_last = chat_last_message_id.get(chat_id, 0)
             if message_id > current_last:
                 chat_last_message_id[chat_id] = message_id
@@ -1626,8 +1656,7 @@ async def cmd_start(message: Message, state: FSMContext):
     chat_last_message_id[message.chat.id] = max(chat_last_message_id.get(message.chat.id, 0), message.message_id)
     await purge_chat_history(message.chat.id)
     await set_webapp_menu_button(message.chat.id)
-    await ensure_main_message(message.chat.id)
-    await message.answer("Меню обновлено", reply_markup=main_kb)
+    await refresh_main_message(message.chat.id)
 
 
 @dp.message(F.text.in_({"старт", "страт", "start"}))
@@ -2274,11 +2303,12 @@ async def fallback_photo(message: Message):
 
 @dp.message()
 async def fallback(message: Message):
-    await send_main_menu(message)
+    return
     
 
 async def main():
     await init_db()
+    await refresh_saved_main_messages()
     web_runner = await start_webapp_server()
     try:
         await dp.start_polling(bot)
