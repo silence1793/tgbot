@@ -411,6 +411,7 @@ async def get_cabinet_dashboard(user_id: int, period_days: int):
                 "latest_seal_number": display_seal(seal_number),
                 "latest_has_photo": bool(photo_file_id),
                 "latest_photo_ref": photo_file_id if photo_file_id else None,
+                "all_seals": [],
                 "stages": [],
             }
 
@@ -428,6 +429,9 @@ async def get_cabinet_dashboard(user_id: int, period_days: int):
         cards_map[card_id]["latest_seal_number"] = display_seal(seal_number)
         cards_map[card_id]["latest_has_photo"] = bool(photo_file_id)
         cards_map[card_id]["latest_photo_ref"] = photo_file_id if photo_file_id else None
+        seal_display = display_seal(seal_number)
+        if seal_display not in cards_map[card_id]["all_seals"]:
+            cards_map[card_id]["all_seals"].append(seal_display)
 
         if is_in_period(created_at, period_days):
             amount_num = parse_money(amount)
@@ -447,6 +451,10 @@ async def get_cabinet_dashboard(user_id: int, period_days: int):
                 })
 
     cards = list(cards_map.values())
+    for card in cards:
+        latest = card.get("latest_seal_number") or "—"
+        rest = [s for s in card.get("all_seals", []) if s != latest]
+        card["all_seals_view"] = [latest] + rest
     cards.sort(key=lambda x: x["card_id"], reverse=True)
     ledger_items.sort(key=lambda x: (parse_card_date(x["created_at"]) or datetime.min), reverse=True)
 
@@ -568,6 +576,7 @@ WEBAPP_HTML = """<!doctype html>
     .stage-list { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; display: grid; gap: 8px; }
     .stage { border-radius: 10px; background: #f9fafb; border: 1px solid var(--line); padding: 8px; }
     .seal { font-size: 18px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .seal-extra { color: var(--muted); font-size: 12px; line-height: 1.25; margin-top: 2px; max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .date { color: var(--muted); font-size: 13px; }
     .row { margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
     .ledger-item { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
@@ -745,6 +754,9 @@ WEBAPP_HTML = """<!doctype html>
               </div>
               <div>
                 <div class="seal">${card.latest_seal_number || "—"}</div>
+                ${(card.all_seals_view && card.all_seals_view.length > 1)
+                  ? `<div class="seal-extra">Связанные: ${card.all_seals_view.slice(1).join(", ")}</div>`
+                  : ""}
                 <div class="date">${card.latest_created_at || "—"}</div>
               </div>
             </div>
