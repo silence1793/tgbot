@@ -1,8 +1,10 @@
 import os
 import asyncio
+import csv
 import json
 import hmac
 import hashlib
+import io
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -120,6 +122,39 @@ def format_money(value: float) -> str:
     if abs(value - round(value)) < 0.000001:
         return str(int(round(value)))
     return f"{value:.2f}"
+
+
+DEFAULT_USER_SETTINGS = {
+    "expense_percent": 40,
+    "show_seal": True,
+    "show_amount": True,
+    "show_work": True,
+    "show_part_cost": True,
+    "show_history": True,
+}
+
+
+def normalize_expense_percent(value) -> int:
+    try:
+        percent = int(value)
+    except Exception:
+        return DEFAULT_USER_SETTINGS["expense_percent"]
+    if percent not in (30, 35, 40, 45, 50):
+        return DEFAULT_USER_SETTINGS["expense_percent"]
+    return percent
+
+
+def parse_bool_flag(value, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def parse_card_date(value: str | None):
@@ -292,6 +327,18 @@ async def init_db():
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                expense_percent INTEGER NOT NULL DEFAULT 40,
+                show_seal INTEGER NOT NULL DEFAULT 1,
+                show_amount INTEGER NOT NULL DEFAULT 1,
+                show_work INTEGER NOT NULL DEFAULT 1,
+                show_part_cost INTEGER NOT NULL DEFAULT 1,
+                show_history INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+
         cursor = await db.execute("PRAGMA table_info(repairs)")
         repair_cols = {row[1] for row in await cursor.fetchall()}
         if "part_cost" not in repair_cols:
@@ -301,6 +348,21 @@ async def init_db():
         history_cols = {row[1] for row in await cursor.fetchall()}
         if "part_cost" not in history_cols:
             await db.execute("ALTER TABLE repair_history ADD COLUMN part_cost TEXT")
+
+        cursor = await db.execute("PRAGMA table_info(user_settings)")
+        settings_cols = {row[1] for row in await cursor.fetchall()}
+        if "expense_percent" not in settings_cols:
+            await db.execute("ALTER TABLE user_settings ADD COLUMN expense_percent INTEGER NOT NULL DEFAULT 40")
+        if "show_seal" not in settings_cols:
+            await db.execute("ALTER TABLE user_settings ADD COLUMN show_seal INTEGER NOT NULL DEFAULT 1")
+        if "show_amount" not in settings_cols:
+            await db.execute("ALTER TABLE user_settings ADD COLUMN show_amount INTEGER NOT NULL DEFAULT 1")
+        if "show_work" not in settings_cols:
+            await db.execute("ALTER TABLE user_settings ADD COLUMN show_work INTEGER NOT NULL DEFAULT 1")
+        if "show_part_cost" not in settings_cols:
+            await db.execute("ALTER TABLE user_settings ADD COLUMN show_part_cost INTEGER NOT NULL DEFAULT 1")
+        if "show_history" not in settings_cols:
+            await db.execute("ALTER TABLE user_settings ADD COLUMN show_history INTEGER NOT NULL DEFAULT 1")
 
         await db.commit()
 
@@ -348,6 +410,71 @@ async def load_main_message_id(chat_id: int):
         if message_id:
             chat_main_message_id[chat_id] = message_id
     return message_id
+
+
+async def get_user_settings(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT expense_percent, show_seal, show_amount, show_work, show_part_cost, show_history
+            FROM user_settings
+            WHERE user_id = ?
+            LIMIT 1
+        """, (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return DEFAULT_USER_SETTINGS.copy()
+        return {
+            "expense_percent": normalize_expense_percent(row[0]),
+            "show_seal": bool(row[1]),
+            "show_amount": bool(row[2]),
+            "show_work": bool(row[3]),
+            "show_part_cost": bool(row[4]),
+            "show_history": bool(row[5]),
+        }
+
+
+async def save_user_settings(user_id: int, settings: dict):
+    merged = DEFAULT_USER_SETTINGS.copy()
+    merged.update({
+        "expense_percent": normalize_expense_percent(settings.get("expense_percent")),
+        "show_seal": parse_bool_flag(settings.get("show_seal"), True),
+        "show_amount": parse_bool_flag(settings.get("show_amount"), True),
+        "show_work": parse_bool_flag(settings.get("show_work"), True),
+        "show_part_cost": parse_bool_flag(settings.get("show_part_cost"), True),
+        "show_history": parse_bool_flag(settings.get("show_history"), True),
+    })
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO user_settings (
+                user_id,
+                expense_percent,
+                show_seal,
+                show_amount,
+                show_work,
+                show_part_cost,
+                show_history
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                expense_percent = excluded.expense_percent,
+                show_seal = excluded.show_seal,
+                show_amount = excluded.show_amount,
+                show_work = excluded.show_work,
+                show_part_cost = excluded.show_part_cost,
+                show_history = excluded.show_history
+        """, (
+            user_id,
+            merged["expense_percent"],
+            int(merged["show_seal"]),
+            int(merged["show_amount"]),
+            int(merged["show_work"]),
+            int(merged["show_part_cost"]),
+            int(merged["show_history"]),
+        ))
+        await db.commit()
+
+    return merged
 
 
 async def ensure_main_message(chat_id: int):
@@ -456,6 +583,7 @@ def validate_webapp_init_data(init_data: str):
 
 
 async def get_cabinet_dashboard(user_id: int, period_days: int, date_from=None, date_to=None):
+    settings = await get_user_settings(user_id)
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
             SELECT
@@ -552,18 +680,20 @@ async def get_cabinet_dashboard(user_id: int, period_days: int, date_from=None, 
     ledger_items.sort(key=lambda x: (parse_card_date(x["created_at"]) or datetime.min), reverse=True)
 
     net_without_parts = gross - details_total
-    percent_40_cost = net_without_parts * 0.4
-    net_after_percent = net_without_parts - percent_40_cost
+    expense_percent = normalize_expense_percent(settings.get("expense_percent"))
+    expense_percent_cost = net_without_parts * (expense_percent / 100)
+    net_after_percent = net_without_parts - expense_percent_cost
 
     summary = {
         "gross_revenue": format_money(gross),
         "parts_cost": format_money(details_total),
         "net_without_parts": format_money(net_without_parts),
-        "percent_40_cost": format_money(percent_40_cost),
+        "expense_percent": expense_percent,
+        "expense_percent_cost": format_money(expense_percent_cost),
         "net_after_percent": format_money(net_after_percent),
         "transactions_count": transactions_count
     }
-    return cards, summary, ledger_items
+    return cards, summary, ledger_items, settings
 
 
 WEBAPP_HTML = """<!doctype html>
@@ -772,6 +902,69 @@ WEBAPP_HTML = """<!doctype html>
       cursor: pointer;
     }
     .m-btn.primary { border-color: var(--accent); color: var(--accent); }
+    .settings-card { background: var(--card); border-radius: 14px; border: 1px solid var(--line); padding: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.04); }
+    .settings-title { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
+    .settings-desc { color: var(--muted); font-size: 13px; margin-top: -4px; margin-bottom: 10px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip-btn {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .chip-btn.active {
+      color: var(--accent);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(59,130,246,.12);
+    }
+    .toggle-list { display: grid; gap: 8px; }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 0;
+      border-top: 1px dashed var(--line);
+    }
+    .toggle-row:first-child { border-top: 0; padding-top: 0; }
+    .toggle-copy { display: grid; gap: 2px; }
+    .toggle-copy .t { font-size: 14px; }
+    .toggle-copy .d { color: var(--muted); font-size: 12px; }
+    .switch-toggle {
+      position: relative;
+      width: 46px;
+      height: 28px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #e5e7eb;
+      cursor: pointer;
+      transition: .15s ease;
+      flex: 0 0 auto;
+    }
+    .switch-toggle::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,.18);
+      transition: .15s ease;
+    }
+    .switch-toggle.active {
+      background: rgba(59,130,246,.18);
+      border-color: var(--accent);
+    }
+    .switch-toggle.active::after {
+      left: 21px;
+      background: var(--accent);
+    }
+    .export-row { display: flex; gap: 8px; flex-wrap: wrap; }
   </style>
 </head>
 <body>
@@ -802,9 +995,22 @@ WEBAPP_HTML = """<!doctype html>
       <div id="cardsList" class="grid cards-grid"></div>
     </div>
     <div id="settingsView" class="grid hidden">
-      <div class="stat">
-        <div class="k">Настройки</div>
-        <div class="row">Раздел готов. Дальше добавим нужные параметры.</div>
+      <div class="settings-card">
+        <div class="settings-title">Процент расходов</div>
+        <div class="settings-desc">Выбери, сколько процентов вычитать из чистой выручки.</div>
+        <div id="expensePercentButtons" class="chips"></div>
+      </div>
+      <div class="settings-card">
+        <div class="settings-title">Что показывать в карточке</div>
+        <div id="cardFieldToggles" class="toggle-list"></div>
+      </div>
+      <div class="settings-card">
+        <div class="settings-title">Экспорт базы</div>
+        <div class="settings-desc">Скачать все твои записи в удобном формате.</div>
+        <div class="export-row">
+          <button id="exportJson" class="m-btn primary" type="button">JSON</button>
+          <button id="exportCsv" class="m-btn" type="button">CSV</button>
+        </div>
       </div>
     </div>
   </div>
@@ -899,6 +1105,22 @@ WEBAPP_HTML = """<!doctype html>
     let currentDateTo = "";
     let editSaving = false;
     let bootstrapped = false;
+    let currentSettings = {
+      expense_percent: 40,
+      show_seal: true,
+      show_amount: true,
+      show_work: true,
+      show_part_cost: true,
+      show_history: true
+    };
+
+    const cardFieldConfig = [
+      { key: "show_seal", title: "Пломба", desc: "Показывать номер пломбы в карточке" },
+      { key: "show_amount", title: "Сумма", desc: "Показывать сумму ремонта" },
+      { key: "show_work", title: "Ремонт", desc: "Показывать описание ремонта" },
+      { key: "show_part_cost", title: "Сумма детали", desc: "Показывать расход на детали" },
+      { key: "show_history", title: "История изменений", desc: "Показывать этапы и историю карточки" }
+    ];
 
     function getTelegramWebApp() {
       return window.Telegram && window.Telegram.WebApp
@@ -943,8 +1165,8 @@ WEBAPP_HTML = """<!doctype html>
         <div class="stat"><div class="k">Валовая выручка</div><div class="v">${money(summary.gross_revenue)}</div></div>
         <div class="stat"><div class="k">Расход на детали</div><div class="v">${money(summary.parts_cost)}</div></div>
         <div class="stat"><div class="k">Чистая без деталей</div><div class="v">${money(summary.net_without_parts)}</div></div>
-        <div class="stat"><div class="k">Расход 40%</div><div class="v">${money(summary.percent_40_cost)}</div></div>
-        <div class="stat"><div class="k">Итог после -40%</div><div class="v">${money(summary.net_after_percent)}</div></div>
+        <div class="stat"><div class="k">Расход ${summary.expense_percent}%</div><div class="v">${money(summary.expense_percent_cost)}</div></div>
+        <div class="stat"><div class="k">Итог после -${summary.expense_percent}%</div><div class="v">${money(summary.net_after_percent)}</div></div>
         <div id="opsWithAmountCard" class="stat clickable"><div class="k">Операций с суммой</div><div class="v">${summary.transactions_count}</div></div>
       `;
       const opsCard = document.getElementById("opsWithAmountCard");
@@ -956,6 +1178,46 @@ WEBAPP_HTML = """<!doctype html>
           if (currentData) renderLedger(currentData.ledger || []);
         });
       }
+    }
+
+    function renderExpensePercentButtons() {
+      const host = document.getElementById("expensePercentButtons");
+      if (!host) return;
+      const current = Number(currentSettings.expense_percent || 40);
+      host.innerHTML = [30, 35, 40, 45, 50].map(percent => `
+        <button class="chip-btn ${current === percent ? "active" : ""}" data-expense-percent="${percent}" type="button">${percent}%</button>
+      `).join("");
+      host.querySelectorAll("[data-expense-percent]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const percent = Number(btn.dataset.expensePercent);
+          saveSettings({ expense_percent: percent });
+        });
+      });
+    }
+
+    function renderCardFieldToggles() {
+      const host = document.getElementById("cardFieldToggles");
+      if (!host) return;
+      host.innerHTML = cardFieldConfig.map(item => `
+        <div class="toggle-row">
+          <div class="toggle-copy">
+            <div class="t">${item.title}</div>
+            <div class="d">${item.desc}</div>
+          </div>
+          <button class="switch-toggle ${currentSettings[item.key] ? "active" : ""}" data-setting-key="${item.key}" type="button" aria-label="${item.title}"></button>
+        </div>
+      `).join("");
+      host.querySelectorAll("[data-setting-key]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const key = btn.dataset.settingKey;
+          saveSettings({ [key]: !Boolean(currentSettings[key]) });
+        });
+      });
+    }
+
+    function renderSettings() {
+      renderExpensePercentButtons();
+      renderCardFieldToggles();
     }
 
     async function loadThumb(photoRef, imgId) {
@@ -982,7 +1244,15 @@ WEBAPP_HTML = """<!doctype html>
         return;
       }
 
-      list.innerHTML = cards.map(card => `
+      const showSeal = Boolean(currentSettings.show_seal);
+      const showAmount = Boolean(currentSettings.show_amount);
+      const showWork = Boolean(currentSettings.show_work);
+      const showPartCost = Boolean(currentSettings.show_part_cost);
+      const showHistory = Boolean(currentSettings.show_history);
+
+      list.innerHTML = cards.map(card => {
+        const latestStage = (card.stages && card.stages.length) ? card.stages[card.stages.length - 1] : {};
+        return `
         <details class="item">
           <summary class="top">
             <div class="summary-left">
@@ -990,9 +1260,9 @@ WEBAPP_HTML = """<!doctype html>
                 ${card.latest_has_photo ? `<img id="img-${card.card_id}" alt="photo" />` : "?"}
               </div>
               <div>
-                <div class="seal">${card.latest_seal_number || "—"}</div>
+                ${showSeal ? `<div class="seal">${card.latest_seal_number || "—"}</div>` : `<div class="seal">Карточка #${card.card_id}</div>`}
                 ${(card.all_seals_view && card.all_seals_view.length > 1)
-                  ? `<div class="seal-extra">Связанные: ${card.all_seals_view.slice(1).join(", ")}</div>`
+                  ? `<div class="seal-extra">${showSeal ? `Связанные: ${card.all_seals_view.slice(1).join(", ")}` : `Связанные записи: ${card.all_seals_view.length}`}</div>`
                   : ""}
                 <div class="date">${card.latest_created_at || "—"}</div>
               </div>
@@ -1006,19 +1276,30 @@ WEBAPP_HTML = """<!doctype html>
               </button>
             </div>
           </summary>
-          <div class="stage-list">
+          <div class="stage-list ${showHistory ? "" : "hidden"}">
             ${card.stages.map(stage => `
               <div class="stage">
                 <div class="row"><b>${stage.stage_type === "main" ? "Основная запись" : "Этап ремонта"}</b> · ${stage.created_at || "—"}</div>
-                <div class="row">Пломба: ${stage.seal_number || "—"}</div>
-                <div class="row">Сумма: ${stage.amount || "—"}</div>
-                <div class="row">Деталь: ${stage.part_cost || "—"}</div>
-                <div class="row">Тип ремонта: ${stage.work_done || "—"}</div>
+                ${showSeal ? `<div class="row">Пломба: ${stage.seal_number || "—"}</div>` : ""}
+                ${showAmount ? `<div class="row">Сумма: ${stage.amount || "—"}</div>` : ""}
+                ${showPartCost ? `<div class="row">Деталь: ${stage.part_cost || "—"}</div>` : ""}
+                ${showWork ? `<div class="row">Тип ремонта: ${stage.work_done || "—"}</div>` : ""}
               </div>
             `).join("")}
           </div>
+          ${!showHistory ? `
+            <div class="stage-list">
+              <div class="stage">
+                ${showSeal ? `<div class="row">Пломба: ${card.latest_seal_number || "—"}</div>` : ""}
+                ${showAmount ? `<div class="row">Сумма: ${latestStage.amount || "—"}</div>` : ""}
+                ${showPartCost ? `<div class="row">Деталь: ${latestStage.part_cost || "—"}</div>` : ""}
+                ${showWork ? `<div class="row">Тип ремонта: ${latestStage.work_done || "—"}</div>` : ""}
+              </div>
+            </div>
+          ` : ""}
         </details>
-      `).join("");
+      `;
+      }).join("");
 
       cards.forEach(card => {
         if (card.latest_has_photo && card.latest_photo_ref) {
@@ -1092,12 +1373,66 @@ WEBAPP_HTML = """<!doctype html>
 
       const data = await resp.json();
       currentData = data;
+      currentSettings = Object.assign({}, currentSettings, data.settings || {});
       const meta = document.getElementById("meta");
       meta.textContent = "Карточек: " + data.count + " · Период: " + data.period_label;
       renderSummary(data.summary);
+      renderSettings();
       renderCards(filterCards(data.cards || []));
       renderLedger(data.ledger || []);
       applyTab();
+    }
+
+    async function saveSettings(patch) {
+      try {
+        const resp = await fetch("/api/cabinet/settings", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            initData: (tg && tg.initData) || "",
+            settings: Object.assign({}, currentSettings, patch)
+          })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok) {
+          if (tg && tg.showAlert) tg.showAlert("Не удалось сохранить настройки");
+          return;
+        }
+        currentSettings = Object.assign({}, currentSettings, data.settings || {});
+        renderSettings();
+        if (currentData) renderCards(filterCards(currentData.cards || []));
+        await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
+      } catch (_) {
+        if (tg && tg.showAlert) tg.showAlert("Ошибка сохранения настроек");
+      }
+    }
+
+    async function exportDatabase(format) {
+      try {
+        const resp = await fetch("/api/cabinet/export", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            initData: (tg && tg.initData) || "",
+            format
+          })
+        });
+        if (!resp.ok) {
+          if (tg && tg.showAlert) tg.showAlert("Не удалось выгрузить базу");
+          return;
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `repairs-export.${format}`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (_) {
+        if (tg && tg.showAlert) tg.showAlert("Ошибка выгрузки");
+      }
     }
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -1244,6 +1579,8 @@ WEBAPP_HTML = """<!doctype html>
       currentCardQuery = e.target.value || "";
       if (currentData) renderCards(filterCards(currentData.cards || []));
     });
+    document.getElementById("exportJson").addEventListener("click", () => exportDatabase("json"));
+    document.getElementById("exportCsv").addEventListener("click", () => exportDatabase("csv"));
 
     async function bootCabinet(attempt = 0) {
       if (bootstrapped) return;
@@ -1357,7 +1694,7 @@ async def cabinet_repairs_api(request: web.Request):
     if date_from and date_to and date_from > date_to:
         date_from, date_to = date_to, date_from
 
-    cards, summary, ledger_items = await get_cabinet_dashboard(user_id, period_days, date_from, date_to)
+    cards, summary, ledger_items, settings = await get_cabinet_dashboard(user_id, period_days, date_from, date_to)
     if date_from or date_to:
         from_label = date_from.strftime("%d.%m.%Y") if date_from else "..."
         to_label = date_to.strftime("%d.%m.%Y") if date_to else "..."
@@ -1371,8 +1708,107 @@ async def cabinet_repairs_api(request: web.Request):
         "period_label": period_label,
         "summary": summary,
         "cards": cards,
-        "ledger": ledger_items
+        "ledger": ledger_items,
+        "settings": settings
     })
+
+
+async def cabinet_settings_api(request: web.Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
+
+    user_id = validate_webapp_init_data((body or {}).get("initData", ""))
+    if not user_id:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    settings = await save_user_settings(user_id, (body or {}).get("settings") or {})
+    return web.json_response({"ok": True, "settings": settings})
+
+
+async def cabinet_export_api(request: web.Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
+
+    user_id = validate_webapp_init_data((body or {}).get("initData", ""))
+    if not user_id:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    export_format = ((body or {}).get("format") or "json").strip().lower()
+    if export_format not in {"json", "csv"}:
+        export_format = "json"
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT
+                r.id AS card_id,
+                r.created_at,
+                r.user_id,
+                r.photo_file_id,
+                r.seal_number,
+                r.work_done,
+                r.amount,
+                r.part_cost,
+                'main' AS stage_type
+            FROM repairs r
+            WHERE r.user_id = ?
+
+            UNION ALL
+
+            SELECT
+                h.parent_repair_id AS card_id,
+                h.created_at,
+                r.user_id,
+                h.photo_file_id,
+                h.seal_number,
+                h.work_done,
+                h.amount,
+                h.part_cost,
+                'history' AS stage_type
+            FROM repair_history h
+            JOIN repairs r ON r.id = h.parent_repair_id
+            WHERE r.user_id = ?
+
+            ORDER BY card_id DESC, created_at DESC
+        """, (user_id, user_id))
+        rows = [dict(row) for row in await cursor.fetchall()]
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if export_format == "json":
+        payload = json.dumps(rows, ensure_ascii=False, indent=2)
+        return web.Response(
+            text=payload,
+            content_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="repairs-{stamp}.json"'}
+        )
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=[
+        "card_id", "stage_type", "created_at", "user_id",
+        "seal_number", "amount", "part_cost", "work_done", "photo_file_id"
+    ])
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({
+            "card_id": row.get("card_id"),
+            "stage_type": row.get("stage_type"),
+            "created_at": row.get("created_at"),
+            "user_id": row.get("user_id"),
+            "seal_number": row.get("seal_number"),
+            "amount": row.get("amount"),
+            "part_cost": row.get("part_cost"),
+            "work_done": row.get("work_done"),
+            "photo_file_id": row.get("photo_file_id"),
+        })
+    return web.Response(
+        text=output.getvalue(),
+        content_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="repairs-{stamp}.csv"'}
+    )
 
 
 async def cabinet_update_card_api(request: web.Request):
@@ -1482,6 +1918,8 @@ async def start_webapp_server():
     app.router.add_post("/api/cabinet/repairs", cabinet_repairs_api)
     app.router.add_post("/api/cabinet/photo", cabinet_photo_api)
     app.router.add_post("/api/cabinet/card/update", cabinet_update_card_api)
+    app.router.add_post("/api/cabinet/settings", cabinet_settings_api)
+    app.router.add_post("/api/cabinet/export", cabinet_export_api)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, WEBAPP_HOST, WEBAPP_PORT)
