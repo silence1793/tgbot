@@ -554,7 +554,12 @@ WEBAPP_HTML = """<!doctype html>
       color: var(--muted);
       transition: .15s ease;
     }
-    .tab-btn .ico { font-size: 18px; line-height: 1; }
+    .tab-btn .ico {
+      min-height: 20px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
     .tab-btn .lbl { font-size: 12px; line-height: 1.1; }
     .tab-btn.active {
       background: #fff;
@@ -590,8 +595,21 @@ WEBAPP_HTML = """<!doctype html>
     .cal-btn {
       width: 40px;
       padding: 8px 0;
-      font-size: 16px;
       line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .icon-svg {
+      width: 18px;
+      height: 18px;
+      display: block;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: 0 0 auto;
     }
     .stats { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-bottom: 12px; }
     .stat { background: var(--card); border-radius: 12px; border: 1px solid var(--line); padding: 10px; }
@@ -641,6 +659,11 @@ WEBAPP_HTML = """<!doctype html>
       cursor: pointer;
     }
     .edit-btn:active { transform: scale(.98); }
+    .edit-btn .icon-svg,
+    .cal-btn .icon-svg {
+      width: 16px;
+      height: 16px;
+    }
     .thumb { width: 42px; height: 42px; border-radius: 10px; border: 1px solid var(--line); background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; font-size: 20px; color: #9ca3af; }
     .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .stage-list { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; display: grid; gap: 8px; }
@@ -713,7 +736,12 @@ WEBAPP_HTML = """<!doctype html>
           <button class="sw-btn active" data-period="7">1 неделя</button>
           <button class="sw-btn" data-period="30">1 месяц</button>
           <button class="sw-btn" data-period="90">3 месяца</button>
-          <button id="openDateRange" class="sw-btn cal-btn" type="button" title="Выбрать даты">📅</button>
+          <button id="openDateRange" class="sw-btn cal-btn" type="button" title="Выбрать даты" aria-label="Выбрать даты">
+            <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="16" rx="3"></rect>
+              <path d="M16 3v4M8 3v4M3 10h18"></path>
+            </svg>
+          </button>
         </div>
       </div>
       <div id="stats" class="stats"></div>
@@ -735,9 +763,34 @@ WEBAPP_HTML = """<!doctype html>
   <div class="tabs-panel">
     <div class="tabs-shell">
       <div class="tabs">
-        <button class="tab-btn active" data-tab="ledger"><span class="ico">💵</span><span class="lbl">Учет</span></button>
-        <button class="tab-btn" data-tab="cards"><span class="ico">🔧</span><span class="lbl">Карточки</span></button>
-        <button class="tab-btn" data-tab="settings"><span class="ico">⚙️</span><span class="lbl">Настройки</span></button>
+        <button class="tab-btn active" data-tab="ledger">
+          <span class="ico">
+            <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3v18"></path>
+              <path d="M16.5 7.5c0-1.9-2-3-4.5-3s-4.5 1.1-4.5 3 2 3 4.5 3 4.5 1.1 4.5 3-2 3-4.5 3-4.5-1.1-4.5-3"></path>
+            </svg>
+          </span>
+          <span class="lbl">Учет</span>
+        </button>
+        <button class="tab-btn" data-tab="cards">
+          <span class="ico">
+            <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14.5 6.5 17.5 3.5a2.12 2.12 0 1 1 3 3l-6.5 6.5"></path>
+              <path d="M13 8 7 14"></path>
+              <path d="M8 21a5 5 0 0 1-5-5c0-1.3.5-2.6 1.5-3.5L10 7l7 7-5.5 5.5A4.98 4.98 0 0 1 8 21Z"></path>
+            </svg>
+          </span>
+          <span class="lbl">Карточки</span>
+        </button>
+        <button class="tab-btn" data-tab="settings">
+          <span class="ico">
+            <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a1.7 1.7 0 1 1-2.4 2.4l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V19a1.7 1.7 0 1 1-3.4 0v-.2a1 1 0 0 0-.7-.9 1 1 0 0 0-1.1.2l-.1.1a1.7 1.7 0 1 1-2.4-2.4l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H5a1.7 1.7 0 1 1 0-3.4h.2a1 1 0 0 0 .9-.7 1 1 0 0 0-.2-1.1l-.1-.1a1.7 1.7 0 1 1 2.4-2.4l.1.1a1 1 0 0 0 1.1.2h.1a1 1 0 0 0 .6-.9V5a1.7 1.7 0 1 1 3.4 0v.2a1 1 0 0 0 .7.9 1 1 0 0 0 1.1-.2l.1-.1a1.7 1.7 0 1 1 2.4 2.4l-.1.1a1 1 0 0 0-.2 1.1v.1a1 1 0 0 0 .9.6H19a1.7 1.7 0 1 1 0 3.4h-.2a1 1 0 0 0-.9.7Z"></path>
+            </svg>
+          </span>
+          <span class="lbl">Настройки</span>
+        </button>
       </div>
     </div>
   </div>
@@ -889,7 +942,12 @@ WEBAPP_HTML = """<!doctype html>
               </div>
             </div>
             <div class="summary-right">
-              <button class="edit-btn" data-card-id="${card.card_id}" title="Редактировать">✏️</button>
+              <button class="edit-btn" data-card-id="${card.card_id}" title="Редактировать" aria-label="Редактировать">
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 21h4l11-11a2.12 2.12 0 1 0-3-3L4 18v3Z"></path>
+                  <path d="m14.5 6.5 3 3"></path>
+                </svg>
+              </button>
             </div>
           </summary>
           <div class="stage-list">
