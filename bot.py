@@ -1081,7 +1081,7 @@ WEBAPP_HTML = """<!doctype html>
               <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.2-3.2a6 6 0 0 1-7.6 7.6l-6.9 6.9a2 2 0 1 1-2.8-2.8l6.9-6.9a6 6 0 0 1 7.6-7.6Z"></path>
             </svg>
           </span>
-          <span class="lbl">Карточки</span>
+          <span class="lbl">Ремонт</span>
         </button>
         <button class="tab-btn" data-tab="settings">
           <span class="ico">
@@ -1216,7 +1216,7 @@ WEBAPP_HTML = """<!doctype html>
         <div class="stat"><div class="k">Валовая выручка</div><div class="v">${money(summary.gross_revenue)}</div></div>
         <div class="stat"><div class="k">Расход на детали</div><div class="v">${money(summary.parts_cost)}</div></div>
         <div class="stat"><div class="k">Чистая без деталей</div><div class="v">${money(summary.net_without_parts)}</div></div>
-        <div class="stat"><div class="k">Расход ${summary.expense_percent}%</div><div class="v">${money(summary.expense_percent_cost)}</div></div>
+        <div class="stat"><div class="k">-${summary.expense_percent}%</div><div class="v">${money(summary.expense_percent_cost)}</div></div>
         <div class="stat"><div class="k">Итог после -${summary.expense_percent}%</div><div class="v">${money(summary.net_after_percent)}</div></div>
         <div id="opsWithAmountCard" class="stat clickable"><div class="k">Операций с суммой</div><div class="v">${summary.transactions_count}</div></div>
       `;
