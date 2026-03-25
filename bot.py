@@ -1045,6 +1045,9 @@ WEBAPP_HTML = """<!doctype html>
           <button id="chatCleanupToggle" class="switch-toggle" type="button" aria-label="Автоочистка чата"></button>
         </div>
         <div id="chatCleanupMinuteButtons" class="chips" style="margin-top:10px;"></div>
+        <div class="export-row" style="margin-top:10px;">
+          <button id="clearChatNow" class="m-btn" type="button">Очистить чат</button>
+        </div>
       </div>
       <div class="settings-card">
         <div class="settings-title">Что показывать в карточке</div>
@@ -1509,6 +1512,30 @@ WEBAPP_HTML = """<!doctype html>
       }
     }
 
+    async function clearChatNow() {
+      try {
+        const resp = await fetch("/api/cabinet/clear-chat", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            initData: (tg && tg.initData) || ""
+          })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok) {
+          if (tg && tg.showAlert) tg.showAlert("Не удалось очистить чат");
+          return;
+        }
+        if (tg && tg.showAlert) {
+          tg.showAlert("Чат очищен");
+        } else {
+          alert("Чат очищен");
+        }
+      } catch (_) {
+        if (tg && tg.showAlert) tg.showAlert("Ошибка очистки чата");
+      }
+    }
+
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => {
         activeTab = btn.dataset.tab;
@@ -1655,6 +1682,7 @@ WEBAPP_HTML = """<!doctype html>
     });
     document.getElementById("exportJson").addEventListener("click", () => exportDatabase("json"));
     document.getElementById("exportCsv").addEventListener("click", () => exportDatabase("csv"));
+    document.getElementById("clearChatNow").addEventListener("click", clearChatNow);
 
     async function bootCabinet(attempt = 0) {
       if (bootstrapped) return;
@@ -1886,6 +1914,26 @@ async def cabinet_export_api(request: web.Request):
     )
 
 
+async def cabinet_clear_chat_api(request: web.Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
+
+    user_id = validate_webapp_init_data((body or {}).get("initData", ""))
+    if not user_id:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    target_chat_ids = [chat_id for chat_id, owner_id in chat_user_ids.items() if owner_id == user_id]
+    if not target_chat_ids:
+        return web.json_response({"ok": True, "cleared": 0})
+
+    for chat_id in target_chat_ids:
+        await purge_chat_history(chat_id)
+
+    return web.json_response({"ok": True, "cleared": len(target_chat_ids)})
+
+
 async def cabinet_update_card_api(request: web.Request):
     try:
         body = await request.json()
@@ -1995,6 +2043,7 @@ async def start_webapp_server():
     app.router.add_post("/api/cabinet/card/update", cabinet_update_card_api)
     app.router.add_post("/api/cabinet/settings", cabinet_settings_api)
     app.router.add_post("/api/cabinet/export", cabinet_export_api)
+    app.router.add_post("/api/cabinet/clear-chat", cabinet_clear_chat_api)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, WEBAPP_HOST, WEBAPP_PORT)
