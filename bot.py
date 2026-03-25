@@ -663,8 +663,10 @@ WEBAPP_HTML = """<!doctype html>
       justify-content: center;
       z-index: 40;
       padding: 16px;
+      pointer-events: none;
     }
     .modal-backdrop.show { display: flex; }
+    .modal-backdrop.show { pointer-events: auto; }
     .modal {
       width: 100%;
       max-width: 460px;
@@ -739,7 +741,7 @@ WEBAPP_HTML = """<!doctype html>
       </div>
     </div>
   </div>
-  <div id="editModalBackdrop" class="modal-backdrop">
+  <div id="editModalBackdrop" class="modal-backdrop" hidden>
     <div class="modal">
       <h3>Редактирование карточки</h3>
       <div class="form-grid">
@@ -766,7 +768,7 @@ WEBAPP_HTML = """<!doctype html>
       </div>
     </div>
   </div>
-  <div id="rangeModalBackdrop" class="modal-backdrop">
+  <div id="rangeModalBackdrop" class="modal-backdrop" hidden>
     <div class="modal">
       <h3>Выбери период</h3>
       <div class="form-grid">
@@ -1010,12 +1012,14 @@ WEBAPP_HTML = """<!doctype html>
       const backdrop = document.getElementById("rangeModalBackdrop");
       backdrop.classList.remove("show");
       backdrop.style.display = "none";
+      backdrop.hidden = true;
     }
 
     function openRangeModal() {
       const backdrop = document.getElementById("rangeModalBackdrop");
       document.getElementById("rangeFrom").value = currentDateFrom || "";
       document.getElementById("rangeTo").value = currentDateTo || "";
+      backdrop.hidden = false;
       backdrop.style.display = "";
       backdrop.classList.add("show");
     }
@@ -1025,8 +1029,13 @@ WEBAPP_HTML = """<!doctype html>
       editingCardId = null;
       editSaving = false;
       document.getElementById("editSave").disabled = false;
+      document.getElementById("editSeal").value = "";
+      document.getElementById("editAmount").value = "";
+      document.getElementById("editWork").value = "";
+      document.getElementById("editPart").value = "";
       backdrop.classList.remove("show");
       backdrop.style.display = "none";
+      backdrop.hidden = true;
     }
 
     function openEditModal(cardId) {
@@ -1040,6 +1049,7 @@ WEBAPP_HTML = """<!doctype html>
       document.getElementById("editAmount").value = latest.amount || "";
       document.getElementById("editWork").value = latest.work_done || "";
       document.getElementById("editPart").value = latest.part_cost || "";
+      backdrop.hidden = false;
       backdrop.style.display = "";
       backdrop.classList.add("show");
     }
