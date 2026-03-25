@@ -852,7 +852,8 @@ WEBAPP_HTML = """<!doctype html>
     summary.top::-webkit-details-marker { display: none; }
     .summary-left { display: flex; gap: 10px; align-items: center; min-width: 0; }
     .summary-right { display: flex; align-items: flex-start; }
-    .edit-btn {
+    .edit-btn,
+    .delete-btn {
       border: 1px solid var(--line);
       background: #fff;
       color: #64748b;
@@ -866,8 +867,10 @@ WEBAPP_HTML = """<!doctype html>
       justify-content: center;
       cursor: pointer;
     }
-    .edit-btn:active { transform: scale(.98); }
+    .delete-btn { color: #b42318; }
+    .edit-btn:active, .delete-btn:active { transform: scale(.98); }
     .edit-btn .icon-svg,
+    .delete-btn .icon-svg,
     .cal-btn .icon-svg {
       width: 16px;
       height: 16px;
@@ -1351,6 +1354,14 @@ WEBAPP_HTML = """<!doctype html>
                   <path d="m14.5 6.5 3 3"></path>
                 </svg>
               </button>
+              <button class="delete-btn" data-card-id="${card.card_id}" title="Удалить" aria-label="Удалить">
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 6h18"></path>
+                  <path d="M8 6V4h8v2"></path>
+                  <path d="M19 6l-1 14H6L5 6"></path>
+                  <path d="M10 11v6M14 11v6"></path>
+                </svg>
+              </button>
             </div>
           </summary>
           <div class="stage-list ${showHistory ? "" : "hidden"}">
@@ -1389,6 +1400,13 @@ WEBAPP_HTML = """<!doctype html>
           e.preventDefault();
           e.stopPropagation();
           openEditModal(Number(btn.dataset.cardId));
+        });
+      });
+      list.querySelectorAll(".delete-btn").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          await confirmDeleteCard(Number(btn.dataset.cardId));
         });
       });
     }
@@ -1533,6 +1551,41 @@ WEBAPP_HTML = """<!doctype html>
         }
       } catch (_) {
         if (tg && tg.showAlert) tg.showAlert("Ошибка очистки чата");
+      }
+    }
+
+    function askConfirm(text) {
+      return new Promise(resolve => {
+        if (tg && tg.showConfirm) {
+          try {
+            tg.showConfirm(text, resolve);
+            return;
+          } catch (_) {}
+        }
+        resolve(window.confirm(text));
+      });
+    }
+
+    async function confirmDeleteCard(cardId) {
+      const ok = await askConfirm("Удалить эту карточку?");
+      if (!ok) return;
+      try {
+        const resp = await fetch("/api/cabinet/card/delete", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            initData: (tg && tg.initData) || "",
+            cardId
+          })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok) {
+          if (tg && tg.showAlert) tg.showAlert("Не удалось удалить карточку");
+          return;
+        }
+        await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
+      } catch (_) {
+        if (tg && tg.showAlert) tg.showAlert("Ошибка удаления");
       }
     }
 
@@ -2035,12 +2088,35 @@ async def cabinet_update_card_api(request: web.Request):
     return web.json_response({"ok": True})
 
 
+async def cabinet_delete_card_api(request: web.Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
+
+    user_id = validate_webapp_init_data((body or {}).get("initData", ""))
+    if not user_id:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    try:
+        card_id = int((body or {}).get("cardId"))
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_card_id"}, status=400)
+
+    deleted = await delete_repair_card(user_id, card_id)
+    if not deleted:
+        return web.json_response({"ok": False, "error": "not_found"}, status=404)
+
+    return web.json_response({"ok": True})
+
+
 async def start_webapp_server():
     app = web.Application()
     app.router.add_get("/cabinet", cabinet_page)
     app.router.add_post("/api/cabinet/repairs", cabinet_repairs_api)
     app.router.add_post("/api/cabinet/photo", cabinet_photo_api)
     app.router.add_post("/api/cabinet/card/update", cabinet_update_card_api)
+    app.router.add_post("/api/cabinet/card/delete", cabinet_delete_card_api)
     app.router.add_post("/api/cabinet/settings", cabinet_settings_api)
     app.router.add_post("/api/cabinet/export", cabinet_export_api)
     app.router.add_post("/api/cabinet/clear-chat", cabinet_clear_chat_api)
