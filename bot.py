@@ -798,6 +798,7 @@ WEBAPP_HTML = """<!doctype html>
     let currentCardQuery = "";
     let currentDateFrom = "";
     let currentDateTo = "";
+    let editSaving = false;
 
     function money(v) {
       return (v ?? "0") + " ₽";
@@ -1022,6 +1023,8 @@ WEBAPP_HTML = """<!doctype html>
     function closeEditModal() {
       const backdrop = document.getElementById("editModalBackdrop");
       editingCardId = null;
+      editSaving = false;
+      document.getElementById("editSave").disabled = false;
       backdrop.classList.remove("show");
       backdrop.style.display = "none";
     }
@@ -1042,7 +1045,7 @@ WEBAPP_HTML = """<!doctype html>
     }
 
     async function saveCardEdit() {
-      if (!editingCardId) return;
+      if (!editingCardId || editSaving) return;
       const saveBtn = document.getElementById("editSave");
       const payload = {
         initData: tg.initData,
@@ -1052,35 +1055,38 @@ WEBAPP_HTML = """<!doctype html>
         workDone: document.getElementById("editWork").value.trim(),
         partCost: document.getElementById("editPart").value.trim()
       };
+      editSaving = true;
       saveBtn.disabled = true;
-      const resp = await fetch("/api/cabinet/card/update", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload)
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok || !data.ok) {
-        saveBtn.disabled = false;
-        const msg = data && data.error === "duplicate_seal"
-          ? "Такая пломба уже есть в базе"
-          : "Не удалось сохранить изменения";
-        if (tg.showAlert) tg.showAlert(msg); else alert(msg);
-        return;
-      }
-      closeEditModal();
-      await new Promise(resolve => requestAnimationFrame(resolve));
       try {
+        const resp = await fetch("/api/cabinet/card/update", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok) {
+          const msg = data && data.error === "duplicate_seal"
+            ? "Такая пломба уже есть в базе"
+            : "Не удалось сохранить изменения";
+          if (tg.showAlert) tg.showAlert(msg); else alert(msg);
+          return;
+        }
+        closeEditModal();
+        await new Promise(resolve => requestAnimationFrame(resolve));
         await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
+      } catch (_) {
+        if (tg.showAlert) tg.showAlert("Ошибка сохранения");
       } finally {
+        editSaving = false;
         saveBtn.disabled = false;
       }
     }
 
     document.getElementById("editCancel").addEventListener("click", closeEditModal);
-    document.getElementById("editSave").addEventListener("click", () => {
-      saveCardEdit().catch(() => {
-        if (tg.showAlert) tg.showAlert("Ошибка сохранения");
-      });
+    document.getElementById("editSave").addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      saveCardEdit();
     });
     document.getElementById("editModalBackdrop").addEventListener("click", (e) => {
       if (e.target.id === "editModalBackdrop") closeEditModal();
