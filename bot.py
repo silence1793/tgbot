@@ -128,12 +128,37 @@ def parse_card_date(value: str | None):
         return None
 
 
+def parse_iso_date(value: str | None):
+    try:
+        return datetime.strptime((value or "").strip(), "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
 def is_in_period(created_at: str | None, period_days: int) -> bool:
     dt = parse_card_date(created_at)
     if not dt:
         return False
     start_date = (datetime.now() - timedelta(days=period_days - 1)).date()
     return dt.date() >= start_date
+
+
+def is_in_date_range(created_at: str | None, date_from=None, date_to=None) -> bool:
+    dt = parse_card_date(created_at)
+    if not dt:
+        return False
+    current = dt.date()
+    if date_from and current < date_from:
+        return False
+    if date_to and current > date_to:
+        return False
+    return True
+
+
+def matches_cabinet_filter(created_at: str | None, period_days: int | None = None, date_from=None, date_to=None) -> bool:
+    if date_from or date_to:
+        return is_in_date_range(created_at, date_from, date_to)
+    return is_in_period(created_at, period_days or 7)
 
 
 def make_virtual_seal() -> str:
@@ -382,7 +407,7 @@ def validate_webapp_init_data(init_data: str):
     return user_id
 
 
-async def get_cabinet_dashboard(user_id: int, period_days: int):
+async def get_cabinet_dashboard(user_id: int, period_days: int, date_from=None, date_to=None):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
             SELECT
@@ -453,7 +478,7 @@ async def get_cabinet_dashboard(user_id: int, period_days: int):
         if seal_display not in cards_map[card_id]["all_seals"]:
             cards_map[card_id]["all_seals"].append(seal_display)
 
-        if is_in_period(created_at, period_days):
+        if matches_cabinet_filter(created_at, period_days, date_from, date_to):
             amount_num = parse_money(amount)
             part_num = parse_money(part_cost)
             if has_explicit_amount(amount):
@@ -562,6 +587,12 @@ WEBAPP_HTML = """<!doctype html>
     .switch { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
     .sw-btn { border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 999px; padding: 8px 12px; font-size: 13px; }
     .sw-btn.active { background: #fff; color: var(--accent); border-color: var(--accent); }
+    .cal-btn {
+      width: 40px;
+      padding: 8px 0;
+      font-size: 16px;
+      line-height: 1;
+    }
     .stats { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-bottom: 12px; }
     .stat { background: var(--card); border-radius: 12px; border: 1px solid var(--line); padding: 10px; }
     .stat .k { color: var(--muted); font-size: 12px; }
@@ -680,6 +711,7 @@ WEBAPP_HTML = """<!doctype html>
           <button class="sw-btn active" data-period="7">1 неделя</button>
           <button class="sw-btn" data-period="30">1 месяц</button>
           <button class="sw-btn" data-period="90">3 месяца</button>
+          <button id="openDateRange" class="sw-btn cal-btn" type="button" title="Выбрать даты">📅</button>
         </div>
       </div>
       <div id="stats" class="stats"></div>
@@ -734,6 +766,26 @@ WEBAPP_HTML = """<!doctype html>
       </div>
     </div>
   </div>
+  <div id="rangeModalBackdrop" class="modal-backdrop">
+    <div class="modal">
+      <h3>Выбери период</h3>
+      <div class="form-grid">
+        <div class="field">
+          <label for="rangeFrom">С даты</label>
+          <input id="rangeFrom" type="date" />
+        </div>
+        <div class="field">
+          <label for="rangeTo">По дату</label>
+          <input id="rangeTo" type="date" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="rangeReset" class="m-btn" type="button">Сбросить</button>
+        <button id="rangeCancel" class="m-btn" type="button">Отмена</button>
+        <button id="rangeApply" class="m-btn primary" type="button">Показать</button>
+      </div>
+    </div>
+  </div>
   <script>
     const tg = window.Telegram.WebApp;
     tg.ready();
@@ -744,6 +796,8 @@ WEBAPP_HTML = """<!doctype html>
     let currentPeriodDays = 7;
     let editingCardId = null;
     let currentCardQuery = "";
+    let currentDateFrom = "";
+    let currentDateTo = "";
 
     function money(v) {
       return (v ?? "0") + " ₽";
@@ -897,12 +951,21 @@ WEBAPP_HTML = """<!doctype html>
       if (opsCard) opsCard.classList.toggle("active", activeTab === "ledger" && ledgerFilter === "with_amount");
     }
 
-    async function loadData(periodDays) {
+    function updatePresetButtons(activePeriod = null, customActive = false) {
+      document.querySelectorAll(".sw-btn[data-period]").forEach(btn => {
+        btn.classList.toggle("active", !customActive && Number(btn.dataset.period) === Number(activePeriod));
+      });
+      document.getElementById("openDateRange").classList.toggle("active", customActive);
+    }
+
+    async function loadData(periodDays, dateFrom = "", dateTo = "") {
       currentPeriodDays = periodDays;
+      currentDateFrom = dateFrom;
+      currentDateTo = dateTo;
       const resp = await fetch("/api/cabinet/repairs", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ initData: tg.initData, periodDays })
+        body: JSON.stringify({ initData: tg.initData, periodDays, dateFrom, dateTo })
       });
 
       if (!resp.ok) {
@@ -933,14 +996,28 @@ WEBAPP_HTML = """<!doctype html>
     });
 
     document.querySelectorAll(".sw-btn").forEach(btn => {
+      if (!btn.dataset.period) return;
       btn.addEventListener("click", () => {
-        document.querySelectorAll(".sw-btn").forEach(x => x.classList.remove("active"));
-        btn.classList.add("active");
-        loadData(Number(btn.dataset.period)).catch(() => {
+        updatePresetButtons(Number(btn.dataset.period), false);
+        loadData(Number(btn.dataset.period), "", "").catch(() => {
           document.getElementById("meta").textContent = "Ошибка загрузки данных";
         });
       });
     });
+
+    function closeRangeModal() {
+      const backdrop = document.getElementById("rangeModalBackdrop");
+      backdrop.classList.remove("show");
+      backdrop.style.display = "none";
+    }
+
+    function openRangeModal() {
+      const backdrop = document.getElementById("rangeModalBackdrop");
+      document.getElementById("rangeFrom").value = currentDateFrom || "";
+      document.getElementById("rangeTo").value = currentDateTo || "";
+      backdrop.style.display = "";
+      backdrop.classList.add("show");
+    }
 
     function closeEditModal() {
       const backdrop = document.getElementById("editModalBackdrop");
@@ -993,7 +1070,7 @@ WEBAPP_HTML = """<!doctype html>
       closeEditModal();
       await new Promise(resolve => requestAnimationFrame(resolve));
       try {
-        await loadData(currentPeriodDays);
+        await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
       } finally {
         saveBtn.disabled = false;
       }
@@ -1007,6 +1084,31 @@ WEBAPP_HTML = """<!doctype html>
     });
     document.getElementById("editModalBackdrop").addEventListener("click", (e) => {
       if (e.target.id === "editModalBackdrop") closeEditModal();
+    });
+    document.getElementById("openDateRange").addEventListener("click", openRangeModal);
+    document.getElementById("rangeCancel").addEventListener("click", closeRangeModal);
+    document.getElementById("rangeReset").addEventListener("click", () => {
+      closeRangeModal();
+      updatePresetButtons(7, false);
+      loadData(7, "", "").catch(() => {
+        document.getElementById("meta").textContent = "Ошибка загрузки данных";
+      });
+    });
+    document.getElementById("rangeApply").addEventListener("click", () => {
+      const dateFrom = document.getElementById("rangeFrom").value || "";
+      const dateTo = document.getElementById("rangeTo").value || "";
+      if (!dateFrom && !dateTo) {
+        if (tg.showAlert) tg.showAlert("Выбери хотя бы одну дату");
+        return;
+      }
+      closeRangeModal();
+      updatePresetButtons(null, true);
+      loadData(currentPeriodDays, dateFrom, dateTo).catch(() => {
+        document.getElementById("meta").textContent = "Ошибка загрузки данных";
+      });
+    });
+    document.getElementById("rangeModalBackdrop").addEventListener("click", (e) => {
+      if (e.target.id === "rangeModalBackdrop") closeRangeModal();
     });
     document.getElementById("cardsSearch").addEventListener("input", (e) => {
       currentCardQuery = e.target.value || "";
@@ -1091,8 +1193,18 @@ async def cabinet_repairs_api(request: web.Request):
     if period_days not in (7, 30, 90):
         period_days = 7
 
-    cards, summary, ledger_items = await get_cabinet_dashboard(user_id, period_days)
-    period_label = {7: "1 неделя", 30: "1 месяц", 90: "3 месяца"}[period_days]
+    date_from = parse_iso_date((body or {}).get("dateFrom"))
+    date_to = parse_iso_date((body or {}).get("dateTo"))
+    if date_from and date_to and date_from > date_to:
+        date_from, date_to = date_to, date_from
+
+    cards, summary, ledger_items = await get_cabinet_dashboard(user_id, period_days, date_from, date_to)
+    if date_from or date_to:
+        from_label = date_from.strftime("%d.%m.%Y") if date_from else "..."
+        to_label = date_to.strftime("%d.%m.%Y") if date_to else "..."
+        period_label = f"{from_label} - {to_label}"
+    else:
+        period_label = {7: "1 неделя", 30: "1 месяц", 90: "3 месяца"}[period_days]
     return web.json_response({
         "ok": True,
         "count": len(cards),
