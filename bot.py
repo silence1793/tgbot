@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from urllib.parse import parse_qsl
 
 import aiosqlite
@@ -173,6 +174,52 @@ def display_seal(seal_number: str | None) -> str:
     if is_virtual_seal(seal_number):
         return "без пломбы"
     return (seal_number or "-").strip() or "-"
+
+
+def resolve_local_photo_path(photo_ref: str | None) -> str | None:
+    raw = (photo_ref or "").strip()
+    if not raw:
+        return None
+
+    candidates: list[Path] = []
+    raw_path = Path(raw)
+    if raw_path.is_absolute():
+        candidates.append(raw_path)
+    else:
+        candidates.extend([
+            raw_path,
+            Path("/home/admin") / raw,
+            Path("/home/admin/ChatExport_2026-03-18") / raw,
+            Path("/opt/tgbot") / raw,
+        ])
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = str(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if candidate.exists() and candidate.is_file():
+            return normalized
+    return None
+
+
+def resolve_message_photo(photo_ref: str | None):
+    raw = (photo_ref or "").strip()
+    if not raw:
+        return None
+
+    local_path = resolve_local_photo_path(raw)
+    if local_path:
+        return FSInputFile(local_path)
+
+    if raw.startswith(("http://", "https://")):
+        return raw
+
+    if "/" in raw or "\\" in raw:
+        return None
+
+    return raw
 
 
 def card_actions_kb(parent_repair_id: int):
@@ -843,9 +890,7 @@ WEBAPP_HTML = """<!doctype html>
     </div>
   </div>
   <script>
-    const tg = window.Telegram.WebApp;
-    tg.ready();
-    tg.expand();
+    let tg = null;
     let activeTab = "ledger";
     let ledgerFilter = "all";
     let currentData = null;
@@ -855,6 +900,18 @@ WEBAPP_HTML = """<!doctype html>
     let currentDateFrom = "";
     let currentDateTo = "";
     let editSaving = false;
+    let bootstrapped = false;
+
+    function getTelegramWebApp() {
+      return window.Telegram && window.Telegram.WebApp
+        ? window.Telegram.WebApp
+        : null;
+    }
+
+    function showMetaError(text) {
+      const meta = document.getElementById("meta");
+      if (meta) meta.textContent = text;
+    }
 
     function money(v) {
       return (v ?? "0") + " ₽";
@@ -908,7 +965,7 @@ WEBAPP_HTML = """<!doctype html>
         const resp = await fetch("/api/cabinet/photo", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({ initData: tg.initData, photoRef })
+          body: JSON.stringify({ initData: (tg && tg.initData) || "", photoRef })
         });
         if (!resp.ok) return;
         const blob = await resp.blob();
@@ -1027,7 +1084,7 @@ WEBAPP_HTML = """<!doctype html>
       const resp = await fetch("/api/cabinet/repairs", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ initData: tg.initData, periodDays, dateFrom, dateTo })
+        body: JSON.stringify({ initData: (tg && tg.initData) || "", periodDays, dateFrom, dateTo })
       });
 
       if (!resp.ok) {
@@ -1117,7 +1174,7 @@ WEBAPP_HTML = """<!doctype html>
       if (!editingCardId || editSaving) return;
       const saveBtn = document.getElementById("editSave");
       const payload = {
-        initData: tg.initData,
+        initData: (tg && tg.initData) || "",
         cardId: editingCardId,
         sealNumber: document.getElementById("editSeal").value.trim(),
         amount: document.getElementById("editAmount").value.trim(),
@@ -1137,14 +1194,14 @@ WEBAPP_HTML = """<!doctype html>
           const msg = data && data.error === "duplicate_seal"
             ? "Такая пломба уже есть в базе"
             : "Не удалось сохранить изменения";
-          if (tg.showAlert) tg.showAlert(msg); else alert(msg);
+          if (tg && tg.showAlert) tg.showAlert(msg); else alert(msg);
           return;
         }
         closeEditModal();
         await new Promise(resolve => requestAnimationFrame(resolve));
         await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
       } catch (_) {
-        if (tg.showAlert) tg.showAlert("Ошибка сохранения");
+        if (tg && tg.showAlert) tg.showAlert("Ошибка сохранения");
       } finally {
         editSaving = false;
         saveBtn.disabled = false;
@@ -1173,7 +1230,7 @@ WEBAPP_HTML = """<!doctype html>
       const dateFrom = document.getElementById("rangeFrom").value || "";
       const dateTo = document.getElementById("rangeTo").value || "";
       if (!dateFrom && !dateTo) {
-        if (tg.showAlert) tg.showAlert("Выбери хотя бы одну дату");
+        if (tg && tg.showAlert) tg.showAlert("Выбери хотя бы одну дату");
         return;
       }
       closeRangeModal();
@@ -1190,9 +1247,35 @@ WEBAPP_HTML = """<!doctype html>
       if (currentData) renderCards(filterCards(currentData.cards || []));
     });
 
-    loadData(7).catch(() => {
-      document.getElementById("meta").textContent = "Ошибка загрузки данных";
-    });
+    async function bootCabinet(attempt = 0) {
+      if (bootstrapped) return;
+
+      tg = getTelegramWebApp();
+      if (!tg) {
+        if (attempt < 50) {
+          setTimeout(() => bootCabinet(attempt + 1), 120);
+          return;
+        }
+        showMetaError("Не удалось инициализировать мини-приложение");
+        return;
+      }
+
+      try {
+        tg.ready();
+        tg.expand();
+      } catch (_) {}
+
+      bootstrapped = true;
+      loadData(7).catch(() => {
+        showMetaError("Ошибка загрузки данных");
+      });
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => bootCabinet());
+    } else {
+      bootCabinet();
+    }
   </script>
 </body>
 </html>
@@ -1217,12 +1300,12 @@ async def cabinet_photo_api(request: web.Request):
     if not photo_ref:
         return web.json_response({"ok": False, "error": "photo_not_found"}, status=404)
 
-    # Local imported photo path
-    if photo_ref.startswith("/") and os.path.exists(photo_ref):
+    local_photo_path = resolve_local_photo_path(photo_ref)
+    if local_photo_path:
         try:
-            with open(photo_ref, "rb") as f:
+            with open(local_photo_path, "rb") as f:
                 data = f.read()
-            ext = os.path.splitext(photo_ref)[1].lower()
+            ext = os.path.splitext(local_photo_path)[1].lower()
             content_type = "image/jpeg"
             if ext == ".png":
                 content_type = "image/png"
@@ -1233,6 +1316,9 @@ async def cabinet_photo_api(request: web.Request):
             return web.json_response({"ok": False, "error": "photo_read_error"}, status=500)
 
     # Telegram file_id
+    if "/" in photo_ref or "\\" in photo_ref:
+        return web.json_response({"ok": False, "error": "photo_not_found"}, status=404)
+
     try:
         tg_file = await bot.get_file(photo_ref)
         file_path = tg_file.file_path
@@ -2060,17 +2146,20 @@ async def show_card_by_seal(message: Message, user_id: int, seal_number: str):
         f"{works_block}"
     )
 
-    if latest_photo_file_id:
-        photo_to_send = latest_photo_file_id
-        if isinstance(latest_photo_file_id, str) and latest_photo_file_id.startswith("/") and os.path.exists(latest_photo_file_id):
-            photo_to_send = FSInputFile(latest_photo_file_id)
+    card_msg = None
+    photo_to_send = resolve_message_photo(latest_photo_file_id)
 
-        card_msg = await message.answer_photo(
-            photo=photo_to_send,
-            caption=caption,
-            reply_markup=card_actions_kb(parent_repair_id)
-        )
-    else:
+    if photo_to_send is not None:
+        try:
+            card_msg = await message.answer_photo(
+                photo=photo_to_send,
+                caption=caption,
+                reply_markup=card_actions_kb(parent_repair_id)
+            )
+        except TelegramBadRequest:
+            card_msg = None
+
+    if card_msg is None:
         card_msg = await message.answer(
             caption,
             reply_markup=card_actions_kb(parent_repair_id)
