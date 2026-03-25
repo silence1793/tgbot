@@ -49,6 +49,7 @@ WEBAPP_URL = (os.getenv("WEBAPP_URL") or "").rstrip("/")
 chat_last_message_id: dict[int, int] = {}
 chat_cleanup_tasks: dict[int, asyncio.Task] = {}
 chat_main_message_id: dict[int, int] = {}
+chat_user_ids: dict[int, int] = {}
 webapp_menu_set_chats: set[int] = set()
 
 if not BOT_TOKEN:
@@ -131,6 +132,8 @@ DEFAULT_USER_SETTINGS = {
     "show_work": True,
     "show_part_cost": True,
     "show_history": True,
+    "chat_cleanup_enabled": True,
+    "chat_cleanup_minutes": 3,
 }
 
 
@@ -155,6 +158,16 @@ def parse_bool_flag(value, default: bool = True) -> bool:
     if raw in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def normalize_chat_cleanup_minutes(value) -> int:
+    try:
+        minutes = int(value)
+    except Exception:
+        return DEFAULT_USER_SETTINGS["chat_cleanup_minutes"]
+    if minutes not in (1, 3, 5, 10):
+        return DEFAULT_USER_SETTINGS["chat_cleanup_minutes"]
+    return minutes
 
 
 def parse_card_date(value: str | None):
@@ -335,7 +348,9 @@ async def init_db():
                 show_amount INTEGER NOT NULL DEFAULT 1,
                 show_work INTEGER NOT NULL DEFAULT 1,
                 show_part_cost INTEGER NOT NULL DEFAULT 1,
-                show_history INTEGER NOT NULL DEFAULT 1
+                show_history INTEGER NOT NULL DEFAULT 1,
+                chat_cleanup_enabled INTEGER NOT NULL DEFAULT 1,
+                chat_cleanup_minutes INTEGER NOT NULL DEFAULT 3
             )
         """)
 
@@ -363,6 +378,10 @@ async def init_db():
             await db.execute("ALTER TABLE user_settings ADD COLUMN show_part_cost INTEGER NOT NULL DEFAULT 1")
         if "show_history" not in settings_cols:
             await db.execute("ALTER TABLE user_settings ADD COLUMN show_history INTEGER NOT NULL DEFAULT 1")
+        if "chat_cleanup_enabled" not in settings_cols:
+            await db.execute("ALTER TABLE user_settings ADD COLUMN chat_cleanup_enabled INTEGER NOT NULL DEFAULT 1")
+        if "chat_cleanup_minutes" not in settings_cols:
+            await db.execute("ALTER TABLE user_settings ADD COLUMN chat_cleanup_minutes INTEGER NOT NULL DEFAULT 3")
 
         await db.commit()
 
@@ -415,7 +434,8 @@ async def load_main_message_id(chat_id: int):
 async def get_user_settings(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
-            SELECT expense_percent, show_seal, show_amount, show_work, show_part_cost, show_history
+            SELECT expense_percent, show_seal, show_amount, show_work, show_part_cost, show_history,
+                   chat_cleanup_enabled, chat_cleanup_minutes
             FROM user_settings
             WHERE user_id = ?
             LIMIT 1
@@ -430,6 +450,8 @@ async def get_user_settings(user_id: int):
             "show_work": bool(row[3]),
             "show_part_cost": bool(row[4]),
             "show_history": bool(row[5]),
+            "chat_cleanup_enabled": bool(row[6]),
+            "chat_cleanup_minutes": normalize_chat_cleanup_minutes(row[7]),
         }
 
 
@@ -442,6 +464,8 @@ async def save_user_settings(user_id: int, settings: dict):
         "show_work": parse_bool_flag(settings.get("show_work"), True),
         "show_part_cost": parse_bool_flag(settings.get("show_part_cost"), True),
         "show_history": parse_bool_flag(settings.get("show_history"), True),
+        "chat_cleanup_enabled": parse_bool_flag(settings.get("chat_cleanup_enabled"), True),
+        "chat_cleanup_minutes": normalize_chat_cleanup_minutes(settings.get("chat_cleanup_minutes")),
     })
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -453,16 +477,20 @@ async def save_user_settings(user_id: int, settings: dict):
                 show_amount,
                 show_work,
                 show_part_cost,
-                show_history
+                show_history,
+                chat_cleanup_enabled,
+                chat_cleanup_minutes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 expense_percent = excluded.expense_percent,
                 show_seal = excluded.show_seal,
                 show_amount = excluded.show_amount,
                 show_work = excluded.show_work,
                 show_part_cost = excluded.show_part_cost,
-                show_history = excluded.show_history
+                show_history = excluded.show_history,
+                chat_cleanup_enabled = excluded.chat_cleanup_enabled,
+                chat_cleanup_minutes = excluded.chat_cleanup_minutes
         """, (
             user_id,
             merged["expense_percent"],
@@ -471,6 +499,8 @@ async def save_user_settings(user_id: int, settings: dict):
             int(merged["show_work"]),
             int(merged["show_part_cost"]),
             int(merged["show_history"]),
+            int(merged["chat_cleanup_enabled"]),
+            int(merged["chat_cleanup_minutes"]),
         ))
         await db.commit()
 
@@ -920,6 +950,10 @@ WEBAPP_HTML = """<!doctype html>
       border-color: var(--accent);
       box-shadow: 0 0 0 2px rgba(59,130,246,.12);
     }
+    .chip-btn:disabled {
+      opacity: .45;
+      cursor: default;
+    }
     .toggle-list { display: grid; gap: 8px; }
     .toggle-row {
       display: flex;
@@ -999,6 +1033,18 @@ WEBAPP_HTML = """<!doctype html>
         <div class="settings-title">Процент расходов</div>
         <div class="settings-desc">Выбери, сколько процентов вычитать из чистой выручки.</div>
         <div id="expensePercentButtons" class="chips"></div>
+      </div>
+      <div class="settings-card">
+        <div class="settings-title">Автоочистка чата</div>
+        <div class="settings-desc">Очищать чат бота автоматически через выбранное время бездействия.</div>
+        <div class="toggle-row">
+          <div class="toggle-copy">
+            <div class="t">Автоочистка включена</div>
+            <div class="d">Если выключить, сообщения бота и история останутся в чате.</div>
+          </div>
+          <button id="chatCleanupToggle" class="switch-toggle" type="button" aria-label="Автоочистка чата"></button>
+        </div>
+        <div id="chatCleanupMinuteButtons" class="chips" style="margin-top:10px;"></div>
       </div>
       <div class="settings-card">
         <div class="settings-title">Что показывать в карточке</div>
@@ -1111,7 +1157,9 @@ WEBAPP_HTML = """<!doctype html>
       show_amount: true,
       show_work: true,
       show_part_cost: true,
-      show_history: true
+      show_history: true,
+      chat_cleanup_enabled: true,
+      chat_cleanup_minutes: 3
     };
 
     const cardFieldConfig = [
@@ -1195,6 +1243,31 @@ WEBAPP_HTML = """<!doctype html>
       });
     }
 
+    function renderChatCleanupControls() {
+      const toggle = document.getElementById("chatCleanupToggle");
+      const host = document.getElementById("chatCleanupMinuteButtons");
+      if (!toggle || !host) return;
+
+      const enabled = Boolean(currentSettings.chat_cleanup_enabled);
+      const currentMinutes = Number(currentSettings.chat_cleanup_minutes || 3);
+
+      toggle.classList.toggle("active", enabled);
+      host.innerHTML = [1, 3, 5, 10].map(minutes => `
+        <button class="chip-btn ${enabled && currentMinutes === minutes ? "active" : ""}" data-cleanup-minutes="${minutes}" type="button"${enabled ? "" : " disabled"}>${minutes} мин</button>
+      `).join("");
+
+      toggle.onclick = () => {
+        saveSettings({ chat_cleanup_enabled: !enabled });
+      };
+
+      host.querySelectorAll("[data-cleanup-minutes]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const minutes = Number(btn.dataset.cleanupMinutes);
+          saveSettings({ chat_cleanup_minutes: minutes, chat_cleanup_enabled: true });
+        });
+      });
+    }
+
     function renderCardFieldToggles() {
       const host = document.getElementById("cardFieldToggles");
       if (!host) return;
@@ -1217,6 +1290,7 @@ WEBAPP_HTML = """<!doctype html>
 
     function renderSettings() {
       renderExpensePercentButtons();
+      renderChatCleanupControls();
       renderCardFieldToggles();
     }
 
@@ -1724,6 +1798,7 @@ async def cabinet_settings_api(request: web.Request):
         return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
 
     settings = await save_user_settings(user_id, (body or {}).get("settings") or {})
+    await apply_user_chat_cleanup_settings(user_id)
     return web.json_response({"ok": True, "settings": settings})
 
 
@@ -2320,22 +2395,37 @@ async def purge_chat_history(chat_id: int):
         await safe_delete_by_id(bot, chat_id, msg_id)
 
 
-async def delayed_chat_cleanup(chat_id: int, anchor_message_id: int):
-    await asyncio.sleep(CHAT_CLEANUP_SECONDS)
+async def delayed_chat_cleanup(chat_id: int, anchor_message_id: int, delay_seconds: int):
+    await asyncio.sleep(delay_seconds)
     if chat_last_message_id.get(chat_id) != anchor_message_id:
         return
     await purge_chat_history(chat_id)
 
 
-def reschedule_chat_cleanup(chat_id: int):
+async def reschedule_chat_cleanup(chat_id: int, user_id: int | None = None):
     task = chat_cleanup_tasks.get(chat_id)
     if task and not task.done():
         task.cancel()
 
+    if not user_id:
+        return
+
+    settings = await get_user_settings(user_id)
+    if not settings.get("chat_cleanup_enabled", True):
+        return
+
+    delay_seconds = normalize_chat_cleanup_minutes(settings.get("chat_cleanup_minutes")) * 60
     anchor = chat_last_message_id.get(chat_id, 0)
     chat_cleanup_tasks[chat_id] = asyncio.create_task(
-        delayed_chat_cleanup(chat_id, anchor)
+        delayed_chat_cleanup(chat_id, anchor, delay_seconds)
     )
+
+
+async def apply_user_chat_cleanup_settings(user_id: int):
+    for chat_id, owner_id in list(chat_user_ids.items()):
+        if owner_id != user_id:
+            continue
+        await reschedule_chat_cleanup(chat_id, user_id)
 
 
 async def delete_message_later(chat_id: int, message_id: int, delay_seconds: int = AUTO_DELETE_SECONDS):
@@ -2397,21 +2487,28 @@ class ActivityCleanupMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         chat_id = None
         message_id = None
+        user_id = None
 
         if isinstance(event, Message):
             chat_id = event.chat.id
             message_id = event.message_id
+            if event.from_user:
+                user_id = event.from_user.id
         elif isinstance(event, CallbackQuery) and event.message:
             chat_id = event.message.chat.id
             message_id = event.message.message_id
+            if event.from_user:
+                user_id = event.from_user.id
 
         if chat_id and message_id:
+            if user_id:
+                chat_user_ids[chat_id] = user_id
             if chat_id not in webapp_menu_set_chats:
                 await set_webapp_menu_button(chat_id)
             current_last = chat_last_message_id.get(chat_id, 0)
             if message_id > current_last:
                 chat_last_message_id[chat_id] = message_id
-            reschedule_chat_cleanup(chat_id)
+            await reschedule_chat_cleanup(chat_id, user_id)
 
         return await handler(event, data)
 
