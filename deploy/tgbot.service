@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram repair accounting bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tgbot
+Environment=DB_PATH=/var/lib/tgbot/repairs.db
+EnvironmentFile=-/opt/tgbot/.env
+ExecStart=/bin/bash -lc 'exec "${PYTHON_BIN:-/root/bot/venv/bin/python}" /opt/tgbot/bot.py'
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

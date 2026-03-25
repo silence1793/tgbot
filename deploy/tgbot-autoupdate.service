@@ -1,0 +1,10 @@
+[Unit]
+Description=Update tgbot from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tgbot
+ExecStart=/opt/tgbot/deploy/update_from_git.sh
+User=root

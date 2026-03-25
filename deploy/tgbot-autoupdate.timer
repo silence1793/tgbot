@@ -1,0 +1,10 @@
+[Unit]
+Description=Check GitHub for tgbot updates every minute
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+Unit=tgbot-autoupdate.service
+
+[Install]
+WantedBy=timers.target
