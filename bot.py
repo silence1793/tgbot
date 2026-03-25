@@ -943,8 +943,10 @@ WEBAPP_HTML = """<!doctype html>
     });
 
     function closeEditModal() {
+      const backdrop = document.getElementById("editModalBackdrop");
       editingCardId = null;
-      document.getElementById("editModalBackdrop").classList.remove("show");
+      backdrop.classList.remove("show");
+      backdrop.style.display = "none";
     }
 
     function openEditModal(cardId) {
@@ -952,16 +954,19 @@ WEBAPP_HTML = """<!doctype html>
       const card = cards.find(c => Number(c.card_id) === Number(cardId));
       if (!card || !card.stages || !card.stages.length) return;
       const latest = card.stages[card.stages.length - 1];
+      const backdrop = document.getElementById("editModalBackdrop");
       editingCardId = cardId;
       document.getElementById("editSeal").value = latest.seal_number || "";
       document.getElementById("editAmount").value = latest.amount || "";
       document.getElementById("editWork").value = latest.work_done || "";
       document.getElementById("editPart").value = latest.part_cost || "";
-      document.getElementById("editModalBackdrop").classList.add("show");
+      backdrop.style.display = "";
+      backdrop.classList.add("show");
     }
 
     async function saveCardEdit() {
       if (!editingCardId) return;
+      const saveBtn = document.getElementById("editSave");
       const payload = {
         initData: tg.initData,
         cardId: editingCardId,
@@ -970,6 +975,7 @@ WEBAPP_HTML = """<!doctype html>
         workDone: document.getElementById("editWork").value.trim(),
         partCost: document.getElementById("editPart").value.trim()
       };
+      saveBtn.disabled = true;
       const resp = await fetch("/api/cabinet/card/update", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -977,6 +983,7 @@ WEBAPP_HTML = """<!doctype html>
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || !data.ok) {
+        saveBtn.disabled = false;
         const msg = data && data.error === "duplicate_seal"
           ? "Такая пломба уже есть в базе"
           : "Не удалось сохранить изменения";
@@ -984,7 +991,12 @@ WEBAPP_HTML = """<!doctype html>
         return;
       }
       closeEditModal();
-      await loadData(currentPeriodDays);
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      try {
+        await loadData(currentPeriodDays);
+      } finally {
+        saveBtn.disabled = false;
+      }
     }
 
     document.getElementById("editCancel").addEventListener("click", closeEditModal);
