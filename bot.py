@@ -511,7 +511,8 @@ WEBAPP_HTML = """<!doctype html>
     }
     body { margin: 0; background: linear-gradient(180deg, #edf4ff 0%, var(--bg) 65%); color: var(--text); font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
     .wrap { max-width: 980px; margin: 0 auto; padding: 16px 16px 92px; }
-    .head { background: var(--card); border-radius: 14px; padding: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.06); margin-bottom: 12px; }
+    .page-view { display: grid; gap: 12px; }
+    .head { background: var(--card); border-radius: 14px; padding: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.06); }
     h1 { font-size: 20px; margin: 0 0 6px; }
     .meta { color: var(--muted); font-size: 13px; }
     .tab-btn {
@@ -568,7 +569,8 @@ WEBAPP_HTML = """<!doctype html>
     .stat.clickable { cursor: pointer; transition: .15s transform ease, .15s box-shadow ease; }
     .stat.clickable:active { transform: scale(0.99); }
     .stat.clickable.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,.16) inset; }
-    .cards-toolbar { margin-bottom: 12px; }
+    .cards-toolbar { margin-bottom: 4px; }
+    .cards-toolbar .search-input { margin-bottom: 0; }
     .search-input {
       width: 100%;
       box-sizing: border-box;
@@ -670,21 +672,25 @@ WEBAPP_HTML = """<!doctype html>
 </head>
 <body>
   <div class="wrap">
-    <div class="head">
-      <h1>Личный кабинет</h1>
-      <div id="meta" class="meta">Загрузка...</div>
-      <div class="switch">
-        <button class="sw-btn active" data-period="7">1 неделя</button>
-        <button class="sw-btn" data-period="30">1 месяц</button>
-        <button class="sw-btn" data-period="90">3 месяца</button>
+    <div id="ledgerPage" class="page-view">
+      <div class="head">
+        <h1>Личный кабинет</h1>
+        <div id="meta" class="meta">Загрузка...</div>
+        <div class="switch">
+          <button class="sw-btn active" data-period="7">1 неделя</button>
+          <button class="sw-btn" data-period="30">1 месяц</button>
+          <button class="sw-btn" data-period="90">3 месяца</button>
+        </div>
       </div>
+      <div id="stats" class="stats"></div>
+      <div id="ledgerList" class="grid"></div>
     </div>
-    <div id="stats" class="stats"></div>
-    <div id="cardsSearchWrap" class="cards-toolbar hidden">
-      <input id="cardsSearch" class="search-input" type="text" placeholder="Поиск по карточкам" />
+    <div id="cardsPage" class="page-view hidden">
+      <div class="cards-toolbar">
+        <input id="cardsSearch" class="search-input" type="text" placeholder="Поиск по карточкам" />
+      </div>
+      <div id="cardsList" class="grid cards-grid"></div>
     </div>
-    <div id="cardsList" class="grid cards-grid hidden"></div>
-    <div id="ledgerList" class="grid"></div>
     <div id="settingsView" class="grid hidden">
       <div class="stat">
         <div class="k">Настройки</div>
@@ -880,18 +886,12 @@ WEBAPP_HTML = """<!doctype html>
     }
 
     function applyTab() {
-      const cards = document.getElementById("cardsList");
-      const ledger = document.getElementById("ledgerList");
+      const ledgerPage = document.getElementById("ledgerPage");
+      const cardsPage = document.getElementById("cardsPage");
       const settings = document.getElementById("settingsView");
-      const stats = document.getElementById("stats");
-      const switchBox = document.querySelector(".switch");
-      const cardsSearchWrap = document.getElementById("cardsSearchWrap");
-      cards.classList.toggle("hidden", activeTab !== "cards");
-      ledger.classList.toggle("hidden", activeTab !== "ledger");
+      ledgerPage.classList.toggle("hidden", activeTab !== "ledger");
+      cardsPage.classList.toggle("hidden", activeTab !== "cards");
       settings.classList.toggle("hidden", activeTab !== "settings");
-      cardsSearchWrap.classList.toggle("hidden", activeTab !== "cards");
-      stats.classList.toggle("hidden", activeTab === "settings");
-      switchBox.classList.toggle("hidden", activeTab === "settings");
       document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === activeTab));
       const opsCard = document.getElementById("opsWithAmountCard");
       if (opsCard) opsCard.classList.toggle("active", activeTab === "ledger" && ledgerFilter === "with_amount");
