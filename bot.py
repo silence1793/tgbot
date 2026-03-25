@@ -735,32 +735,96 @@ WEBAPP_HTML = """<!doctype html>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
     :root {
-      --bg: #f4f7fb;
-      --card: #ffffff;
-      --text: #1f2937;
-      --muted: #6b7280;
-      --line: #dbe2ea;
-      --accent: #3b82f6;
+      --bg: var(--tg-theme-secondary-bg-color, #F2F2F7);
+      --card: var(--tg-theme-bg-color, #FFFFFF);
+      --text: var(--tg-theme-text-color, #1C1C1E);
+      --muted: var(--tg-theme-hint-color, #8E8E93);
+      --line: #C6C6C8;
+      --accent: var(--tg-theme-button-color, #007AFF);
+      --danger: #FF3B30;
+      --danger-soft: rgba(255,59,48,.1);
+      --shadow: 0 10px 30px rgba(28,28,30,.08);
+      --shadow-soft: 0 2px 8px rgba(0,0,0,.12);
+      --chip-bg: rgba(118,118,128,.12);
+      --placeholder-grad: linear-gradient(135deg, #E5E5EA 0%, #D1D1D6 100%);
     }
-    body { margin: 0; background: linear-gradient(180deg, #edf4ff 0%, var(--bg) 65%); color: var(--text); font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
-    .wrap { max-width: 980px; margin: 0 auto; padding: 16px 16px 92px; }
-    .page-view { display: grid; gap: 12px; }
-    .head { background: var(--card); border-radius: 14px; padding: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.06); }
-    h1 { font-size: 20px; margin: 0 0 6px; }
+    body.dark-theme {
+      --bg: var(--tg-theme-secondary-bg-color, #000000);
+      --card: var(--tg-theme-bg-color, #1C1C1E);
+      --text: var(--tg-theme-text-color, #FFFFFF);
+      --muted: var(--tg-theme-hint-color, #8E8E93);
+      --line: #38383A;
+      --accent: var(--tg-theme-button-color, #0A84FF);
+      --danger: #FF453A;
+      --danger-soft: rgba(255,69,58,.12);
+      --shadow: 0 16px 32px rgba(0,0,0,.28);
+      --shadow-soft: 0 2px 8px rgba(0,0,0,.2);
+      --chip-bg: rgba(118,118,128,.24);
+      --placeholder-grad: linear-gradient(135deg, #3A3A3C 0%, #2C2C2E 100%);
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    button,
+    summary,
+    .stat.clickable,
+    .toggle-row,
+    .chip-btn,
+    .m-btn,
+    .tab-btn,
+    .sw-btn {
+      transition: opacity .1s ease, transform .16s ease, box-shadow .18s ease, border-color .18s ease, background-color .18s ease;
+    }
+    button:active,
+    summary:active,
+    .stat.clickable:active,
+    .toggle-row:active,
+    .chip-btn:active,
+    .m-btn:active,
+    .tab-btn:active,
+    .sw-btn:active {
+      opacity: .7;
+    }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 16px 16px 102px; }
+    .page-view {
+      display: grid;
+      gap: 12px;
+      opacity: 1;
+      transform: translateY(0);
+      animation: fadeSlideIn .22s ease;
+    }
+    .page-view.hidden { display: none; }
+    @keyframes fadeSlideIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .head {
+      background: var(--card);
+      border-radius: 20px;
+      padding: 18px 16px 16px;
+      box-shadow: var(--shadow);
+    }
+    h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.02em; }
     .meta { color: var(--muted); font-size: 13px; }
     .tab-btn {
-      border: 1.5px solid var(--line);
-      background: #fff;
-      border-radius: 14px;
-      padding: 9px 10px;
+      border: 1px solid var(--line);
+      background: var(--card);
+      border-radius: 16px;
+      padding: 10px 10px 9px;
       font-size: 14px;
-      min-height: 54px;
+      min-height: 58px;
       min-width: 0;
       display: grid;
-      gap: 3px;
+      gap: 4px;
       justify-items: center;
       color: var(--muted);
-      transition: .15s ease;
     }
     .tab-btn .ico {
       min-height: 20px;
@@ -770,18 +834,18 @@ WEBAPP_HTML = """<!doctype html>
     }
     .tab-btn .lbl { font-size: 12px; line-height: 1.1; }
     .tab-btn.active {
-      background: #fff;
+      background: var(--card);
       color: var(--accent);
       border-color: var(--accent);
-      box-shadow: 0 0 0 2px rgba(59,130,246,.16);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent), var(--shadow-soft);
     }
     .tabs-panel {
       position: fixed;
       left: 0;
       right: 0;
       bottom: 0;
-      background: rgba(255,255,255,.96);
-      backdrop-filter: blur(6px);
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(18px);
       border-top: 1px solid var(--line);
       padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
       z-index: 20;
@@ -791,18 +855,39 @@ WEBAPP_HTML = """<!doctype html>
       display: grid;
       grid-template-columns: repeat(3, minmax(0,1fr));
       gap: 8px;
-      background: #fff;
+      background: color-mix(in srgb, var(--card) 84%, var(--bg));
       border: 1px solid var(--line);
-      border-radius: 18px;
+      border-radius: 20px;
       padding: 8px;
-      box-shadow: 0 8px 28px rgba(18,52,86,.08);
+      box-shadow: var(--shadow);
     }
-    .switch { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
-    .sw-btn { border: 1px solid var(--line); background: #fff; color: var(--text); border-radius: 999px; padding: 8px 12px; font-size: 13px; }
-    .sw-btn.active { background: #fff; color: var(--accent); border-color: var(--accent); }
+    .switch {
+      margin-top: 14px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      padding: 4px;
+      background: var(--chip-bg);
+      border-radius: 16px;
+    }
+    .sw-btn {
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      flex: 1 1 auto;
+    }
+    .sw-btn.active {
+      background: var(--card);
+      color: var(--text);
+      box-shadow: var(--shadow-soft);
+    }
     .cal-btn {
       width: 40px;
-      padding: 8px 0;
+      padding: 10px 0;
       line-height: 1;
       display: inline-flex;
       align-items: center;
@@ -819,47 +904,75 @@ WEBAPP_HTML = """<!doctype html>
       stroke-linejoin: round;
       flex: 0 0 auto;
     }
-    .stats { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-bottom: 12px; }
-    .stat { background: var(--card); border-radius: 12px; border: 1px solid var(--line); padding: 10px; }
-    .stat .k { color: var(--muted); font-size: 12px; }
-    .stat .v { margin-top: 4px; font-size: 18px; font-weight: 700; }
-    .stat.clickable { cursor: pointer; transition: .15s transform ease, .15s box-shadow ease; }
+    .stats { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-bottom: 4px; }
+    .stat {
+      background: var(--card);
+      border-radius: 18px;
+      border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+      padding: 14px;
+      box-shadow: var(--shadow);
+    }
+    .stat.hero {
+      grid-column: 1 / -1;
+      border-left: 4px solid var(--accent);
+    }
+    .stat .k { color: var(--muted); font-size: 12px; letter-spacing: -0.01em; }
+    .stat .v { margin-top: 6px; font-size: 24px; font-weight: 700; line-height: 1.05; }
+    .stat.clickable { cursor: pointer; }
     .stat.clickable:active { transform: scale(0.99); }
-    .stat.clickable.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,.16) inset; }
-    .cards-toolbar { margin-bottom: 4px; }
+    .stat.clickable.active { border-color: var(--accent); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent), var(--shadow); }
+    .cards-toolbar { margin-bottom: 4px; padding: 0 0 4px; }
     .cards-toolbar .search-input { margin-bottom: 0; }
     .search-input {
       width: 100%;
-      box-sizing: border-box;
       border: 1px solid var(--line);
-      border-radius: 14px;
-      background: #fff;
+      border-radius: 16px;
+      background: var(--card);
       color: var(--text);
-      padding: 12px 14px;
+      padding: 13px 14px;
       font-size: 15px;
       outline: none;
-      box-shadow: 0 8px 24px rgba(18,52,86,.05);
+      box-shadow: var(--shadow);
     }
     .search-input:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(59,130,246,.12);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent), var(--shadow);
     }
-    .grid { display: grid; gap: 10px; }
-    .cards-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+    .grid { display: grid; gap: 12px; }
+    .cards-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 4px 0 0; }
     .hidden { display: none; }
-    details.item { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
-    summary.top { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 4px; cursor: pointer; list-style: none; }
+    details.item {
+      background: var(--card);
+      border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    summary.top {
+      display: grid;
+      gap: 0;
+      cursor: pointer;
+      list-style: none;
+    }
     summary.top::-webkit-details-marker { display: none; }
-    .summary-left { display: flex; gap: 10px; align-items: center; min-width: 0; }
-    .summary-right { display: flex; align-items: flex-start; }
+    .summary-left { display: contents; }
+    .summary-right {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      display: flex;
+      gap: 6px;
+      z-index: 2;
+    }
     .edit-btn,
     .delete-btn {
-      border: 1px solid var(--line);
-      background: #fff;
-      color: #64748b;
-      border-radius: 8px;
-      width: 28px;
-      height: 28px;
+      border: 0;
+      background: rgba(0,0,0,.38);
+      color: #fff;
+      backdrop-filter: blur(8px);
+      border-radius: 10px;
+      width: 30px;
+      height: 30px;
       font-size: 15px;
       line-height: 1;
       display: inline-flex;
@@ -867,7 +980,7 @@ WEBAPP_HTML = """<!doctype html>
       justify-content: center;
       cursor: pointer;
     }
-    .delete-btn { color: #b42318; }
+    .delete-btn { background: rgba(255,59,48,.78); color: #fff; }
     .edit-btn:active, .delete-btn:active { transform: scale(.98); }
     .edit-btn .icon-svg,
     .delete-btn .icon-svg,
@@ -875,23 +988,100 @@ WEBAPP_HTML = """<!doctype html>
       width: 16px;
       height: 16px;
     }
-    .thumb { width: 42px; height: 42px; border-radius: 10px; border: 1px solid var(--line); background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; font-size: 20px; color: #9ca3af; }
-    .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-    .stage-list { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; display: grid; gap: 8px; }
-    .stage { border-radius: 10px; background: #f9fafb; border: 1px solid var(--line); padding: 8px; }
+    .repair-media {
+      position: relative;
+      aspect-ratio: 1 / 1;
+      background: var(--placeholder-grad);
+      overflow: hidden;
+    }
+    .thumb {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      font-size: 32px;
+      color: rgba(255,255,255,.82);
+    }
+    .thumb img,
+    .repair-photo {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .repair-badge {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      display: inline-flex;
+      align-items: center;
+      max-width: calc(100% - 88px);
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.5);
+      backdrop-filter: blur(4px);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .02em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      z-index: 2;
+    }
+    .repair-body { padding: 12px; display: grid; gap: 6px; }
+    .repair-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .repair-sub { color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .repair-metrics { display: grid; gap: 4px; }
+    .repair-line {
+      font-size: 13px;
+      line-height: 1.35;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .stage-list {
+      margin: 0 12px 12px;
+      border-top: 1px dashed color-mix(in srgb, var(--line) 80%, transparent);
+      padding-top: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .stage {
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--card) 55%, var(--bg));
+      border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+      padding: 10px;
+    }
     .seal { font-size: 18px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .seal-extra { color: var(--muted); font-size: 12px; line-height: 1.25; margin-top: 2px; max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .seal-extra { color: var(--muted); font-size: 12px; line-height: 1.25; margin-top: 2px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .date { color: var(--muted); font-size: 13px; }
     .row { margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
-    .ledger-item { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+    .ledger-item {
+      background: var(--card);
+      border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+      border-radius: 16px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+    }
     .ledger-top { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
     .plus { color: #065f46; font-weight: 700; }
-    .minus { color: #b91c1c; font-weight: 700; }
+    .minus { color: var(--danger); font-weight: 700; }
     .empty { color: var(--muted); text-align: center; padding: 24px; }
     .modal-backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(15,23,42,.36);
+      background: rgba(15,23,42,.26);
       display: none;
       align-items: center;
       justify-content: center;
@@ -904,11 +1094,11 @@ WEBAPP_HTML = """<!doctype html>
     .modal {
       width: 100%;
       max-width: 460px;
-      background: #fff;
-      border: 1px solid var(--line);
-      border-radius: 16px;
+      background: var(--card);
+      border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+      border-radius: 20px;
       box-shadow: 0 20px 45px rgba(15,23,42,.22);
-      padding: 14px;
+      padding: 16px;
     }
     .modal h3 { margin: 0 0 10px; font-size: 18px; }
     .form-grid { display: grid; gap: 10px; }
@@ -916,42 +1106,50 @@ WEBAPP_HTML = """<!doctype html>
     .field label { color: var(--muted); font-size: 12px; }
     .field input, .field textarea {
       border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 10px;
+      border-radius: 14px;
+      padding: 12px;
       font-size: 14px;
       font-family: inherit;
-      background: #fff;
+      background: var(--card);
       color: var(--text);
       resize: vertical;
     }
     .modal-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
     .m-btn {
       border: 1px solid var(--line);
-      background: #fff;
+      background: var(--card);
       color: var(--text);
-      border-radius: 10px;
-      padding: 8px 12px;
+      border-radius: 14px;
+      padding: 10px 14px;
       font-size: 14px;
       cursor: pointer;
     }
     .m-btn.primary { border-color: var(--accent); color: var(--accent); }
-    .settings-card { background: var(--card); border-radius: 14px; border: 1px solid var(--line); padding: 14px; box-shadow: 0 6px 24px rgba(0,0,0,.04); }
-    .settings-title { font-size: 15px; font-weight: 700; margin-bottom: 10px; }
+    .settings-card {
+      background: var(--card);
+      border-radius: 20px;
+      border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+      padding: 12px 16px;
+      box-shadow: var(--shadow);
+    }
+    .settings-title { font-size: 15px; font-weight: 700; margin: 2px 0 10px; }
     .settings-desc { color: var(--muted); font-size: 13px; margin-top: -4px; margin-bottom: 10px; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip-btn {
-      border: 1px solid var(--line);
-      background: #fff;
+      border: 1px solid transparent;
+      background: var(--chip-bg);
       color: var(--text);
       border-radius: 999px;
-      padding: 8px 12px;
+      padding: 9px 13px;
       font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
     }
     .chip-btn.active {
+      background: var(--card);
       color: var(--accent);
-      border-color: var(--accent);
-      box-shadow: 0 0 0 2px rgba(59,130,246,.12);
+      border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+      box-shadow: var(--shadow-soft);
     }
     .chip-btn:disabled {
       opacity: .45;
@@ -963,8 +1161,9 @@ WEBAPP_HTML = """<!doctype html>
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 10px 0;
-      border-top: 1px dashed var(--line);
+      min-height: 44px;
+      padding: 12px 0;
+      border-top: 0.5px solid color-mix(in srgb, var(--line) 85%, transparent);
     }
     .toggle-row:first-child { border-top: 0; padding-top: 0; }
     .toggle-copy { display: grid; gap: 2px; }
@@ -976,7 +1175,7 @@ WEBAPP_HTML = """<!doctype html>
       height: 28px;
       border-radius: 999px;
       border: 1px solid var(--line);
-      background: #e5e7eb;
+      background: color-mix(in srgb, var(--muted) 28%, transparent);
       cursor: pointer;
       transition: .15s ease;
       flex: 0 0 auto;
@@ -994,7 +1193,7 @@ WEBAPP_HTML = """<!doctype html>
       transition: .15s ease;
     }
     .switch-toggle.active {
-      background: rgba(59,130,246,.18);
+      background: color-mix(in srgb, var(--accent) 24%, transparent);
       border-color: var(--accent);
     }
     .switch-toggle.active::after {
@@ -1002,6 +1201,10 @@ WEBAPP_HTML = """<!doctype html>
       background: var(--accent);
     }
     .export-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    @media (max-width: 720px) {
+      .wrap { padding: 14px 14px 102px; }
+      .stats { grid-template-columns: 1fr 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -1182,6 +1385,45 @@ WEBAPP_HTML = """<!doctype html>
         : null;
     }
 
+    function hapticImpact(style = "medium") {
+      try {
+        if (tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred) {
+          tg.HapticFeedback.impactOccurred(style);
+        }
+      } catch (_) {}
+    }
+
+    function hapticNotify(type = "success") {
+      try {
+        if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
+          tg.HapticFeedback.notificationOccurred(type);
+        }
+      } catch (_) {}
+    }
+
+    function applyTheme() {
+      const root = document.documentElement;
+      const body = document.body;
+      if (!root || !body) return;
+
+      const params = (tg && tg.themeParams) || {};
+      const bg = params.bg_color || params.secondary_bg_color || "#F2F2F7";
+      const card = params.secondary_bg_color || params.bg_color || "#FFFFFF";
+      const text = params.text_color || "#1C1C1E";
+      const muted = params.hint_color || "#8E8E93";
+      const accent = params.button_color || params.link_color || "#007AFF";
+      const line = params.section_separator_color || params.section_header_text_color || "#C6C6C8";
+
+      root.style.setProperty("--bg", bg);
+      root.style.setProperty("--card", card);
+      root.style.setProperty("--text", text);
+      root.style.setProperty("--muted", muted);
+      root.style.setProperty("--accent", accent);
+      root.style.setProperty("--line", line);
+
+      body.classList.toggle("dark-theme", (tg && tg.colorScheme) === "dark");
+    }
+
     function showMetaError(text) {
       const meta = document.getElementById("meta");
       if (meta) meta.textContent = text;
@@ -1193,6 +1435,15 @@ WEBAPP_HTML = """<!doctype html>
 
     function normalizeSearchText(value) {
       return String(value || "").toLowerCase().trim();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
     }
 
     function filterCards(cards) {
@@ -1216,11 +1467,11 @@ WEBAPP_HTML = """<!doctype html>
     function renderSummary(summary) {
       const stats = document.getElementById("stats");
       stats.innerHTML = `
+        <div class="stat hero"><div class="k">Итог после -${summary.expense_percent}%</div><div class="v">${money(summary.net_after_percent)}</div></div>
         <div class="stat"><div class="k">Валовая выручка</div><div class="v">${money(summary.gross_revenue)}</div></div>
         <div class="stat"><div class="k">Расход на детали</div><div class="v">${money(summary.parts_cost)}</div></div>
         <div class="stat"><div class="k">Чистая без деталей</div><div class="v">${money(summary.net_without_parts)}</div></div>
         <div class="stat"><div class="k">-${summary.expense_percent}%</div><div class="v">${money(summary.expense_percent_cost)}</div></div>
-        <div class="stat"><div class="k">Итог после -${summary.expense_percent}%</div><div class="v">${money(summary.net_after_percent)}</div></div>
         <div id="opsWithAmountCard" class="stat clickable"><div class="k">Операций с суммой</div><div class="v">${summary.transactions_count}</div></div>
       `;
       const opsCard = document.getElementById("opsWithAmountCard");
@@ -1332,56 +1583,69 @@ WEBAPP_HTML = """<!doctype html>
 
       list.innerHTML = cards.map(card => {
         const latestStage = (card.stages && card.stages.length) ? card.stages[card.stages.length - 1] : {};
+        const title = showSeal
+          ? (card.latest_seal_number || "Без пломбы")
+          : `Карточка #${card.card_id}`;
+        const related = (card.all_seals_view && card.all_seals_view.length > 1)
+          ? (showSeal ? `Связанные: ${card.all_seals_view.slice(1).join(", ")}` : `Связанные записи: ${card.all_seals_view.length}`)
+          : "";
+        const amountLine = showAmount ? `<div class="repair-line">Сумма: ${escapeHtml(latestStage.amount || "—")}</div>` : "";
+        const partLine = showPartCost ? `<div class="repair-line">Деталь: ${escapeHtml(latestStage.part_cost || "—")}</div>` : "";
+        const workLine = showWork ? `<div class="repair-line">${escapeHtml(latestStage.work_done || "Без описания ремонта")}</div>` : "";
         return `
         <details class="item">
           <summary class="top">
-            <div class="summary-left">
-              <div class="thumb">
-                ${card.latest_has_photo ? `<img id="img-${card.card_id}" alt="photo" />` : "?"}
+            <div class="summary-left repair-media">
+              ${showSeal ? `<div class="repair-badge">${escapeHtml(card.latest_seal_number || "Без пломбы")}</div>` : ""}
+              <div class="summary-right">
+                <button class="edit-btn" data-card-id="${card.card_id}" title="Редактировать" aria-label="Редактировать">
+                  <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 21h4l11-11a2.12 2.12 0 1 0-3-3L4 18v3Z"></path>
+                    <path d="m14.5 6.5 3 3"></path>
+                  </svg>
+                </button>
+                <button class="delete-btn" data-card-id="${card.card_id}" title="Удалить" aria-label="Удалить">
+                  <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 6h18"></path>
+                    <path d="M8 6V4h8v2"></path>
+                    <path d="M19 6l-1 14H6L5 6"></path>
+                    <path d="M10 11v6M14 11v6"></path>
+                  </svg>
+                </button>
               </div>
-              <div>
-                ${showSeal ? `<div class="seal">${card.latest_seal_number || "—"}</div>` : `<div class="seal">Карточка #${card.card_id}</div>`}
-                ${(card.all_seals_view && card.all_seals_view.length > 1)
-                  ? `<div class="seal-extra">${showSeal ? `Связанные: ${card.all_seals_view.slice(1).join(", ")}` : `Связанные записи: ${card.all_seals_view.length}`}</div>`
-                  : ""}
-                <div class="date">${card.latest_created_at || "—"}</div>
+              <div class="thumb">
+                ${card.latest_has_photo ? `<img id="img-${card.card_id}" class="repair-photo" alt="photo" />` : "?"}
               </div>
             </div>
-            <div class="summary-right">
-              <button class="edit-btn" data-card-id="${card.card_id}" title="Редактировать" aria-label="Редактировать">
-                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M3 21h4l11-11a2.12 2.12 0 1 0-3-3L4 18v3Z"></path>
-                  <path d="m14.5 6.5 3 3"></path>
-                </svg>
-              </button>
-              <button class="delete-btn" data-card-id="${card.card_id}" title="Удалить" aria-label="Удалить">
-                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M3 6h18"></path>
-                  <path d="M8 6V4h8v2"></path>
-                  <path d="M19 6l-1 14H6L5 6"></path>
-                  <path d="M10 11v6M14 11v6"></path>
-                </svg>
-              </button>
+            <div class="repair-body">
+              <div class="repair-title">${escapeHtml(title)}</div>
+              <div class="date">${escapeHtml(card.latest_created_at || "—")}</div>
+              ${related ? `<div class="seal-extra">${escapeHtml(related)}</div>` : ""}
+              <div class="repair-metrics">
+                ${amountLine}
+                ${partLine}
+                ${workLine}
+              </div>
             </div>
           </summary>
           <div class="stage-list ${showHistory ? "" : "hidden"}">
             ${card.stages.map(stage => `
               <div class="stage">
-                <div class="row"><b>${stage.stage_type === "main" ? "Основная запись" : "Этап ремонта"}</b> · ${stage.created_at || "—"}</div>
-                ${showSeal ? `<div class="row">Пломба: ${stage.seal_number || "—"}</div>` : ""}
-                ${showAmount ? `<div class="row">Сумма: ${stage.amount || "—"}</div>` : ""}
-                ${showPartCost ? `<div class="row">Деталь: ${stage.part_cost || "—"}</div>` : ""}
-                ${showWork ? `<div class="row">Тип ремонта: ${stage.work_done || "—"}</div>` : ""}
+                <div class="row"><b>${stage.stage_type === "main" ? "Основная запись" : "Этап ремонта"}</b> · ${escapeHtml(stage.created_at || "—")}</div>
+                ${showSeal ? `<div class="row">Пломба: ${escapeHtml(stage.seal_number || "—")}</div>` : ""}
+                ${showAmount ? `<div class="row">Сумма: ${escapeHtml(stage.amount || "—")}</div>` : ""}
+                ${showPartCost ? `<div class="row">Деталь: ${escapeHtml(stage.part_cost || "—")}</div>` : ""}
+                ${showWork ? `<div class="row">Тип ремонта: ${escapeHtml(stage.work_done || "—")}</div>` : ""}
               </div>
             `).join("")}
           </div>
           ${!showHistory ? `
             <div class="stage-list">
               <div class="stage">
-                ${showSeal ? `<div class="row">Пломба: ${card.latest_seal_number || "—"}</div>` : ""}
-                ${showAmount ? `<div class="row">Сумма: ${latestStage.amount || "—"}</div>` : ""}
-                ${showPartCost ? `<div class="row">Деталь: ${latestStage.part_cost || "—"}</div>` : ""}
-                ${showWork ? `<div class="row">Тип ремонта: ${latestStage.work_done || "—"}</div>` : ""}
+                ${showSeal ? `<div class="row">Пломба: ${escapeHtml(card.latest_seal_number || "—")}</div>` : ""}
+                ${showAmount ? `<div class="row">Сумма: ${escapeHtml(latestStage.amount || "—")}</div>` : ""}
+                ${showPartCost ? `<div class="row">Деталь: ${escapeHtml(latestStage.part_cost || "—")}</div>` : ""}
+                ${showWork ? `<div class="row">Тип ремонта: ${escapeHtml(latestStage.work_done || "—")}</div>` : ""}
               </div>
             </div>
           ` : ""}
@@ -1436,9 +1700,18 @@ WEBAPP_HTML = """<!doctype html>
       const ledgerPage = document.getElementById("ledgerPage");
       const cardsPage = document.getElementById("cardsPage");
       const settings = document.getElementById("settingsView");
-      ledgerPage.classList.toggle("hidden", activeTab !== "ledger");
-      cardsPage.classList.toggle("hidden", activeTab !== "cards");
-      settings.classList.toggle("hidden", activeTab !== "settings");
+      [
+        [ledgerPage, activeTab === "ledger"],
+        [cardsPage, activeTab === "cards"],
+        [settings, activeTab === "settings"]
+      ].forEach(([node, show]) => {
+        node.classList.toggle("hidden", !show);
+        if (show) {
+          node.style.animation = "none";
+          void node.offsetWidth;
+          node.style.animation = "";
+        }
+      });
       document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === activeTab));
       const opsCard = document.getElementById("opsWithAmountCard");
       if (opsCard) opsCard.classList.toggle("active", activeTab === "ledger" && ledgerFilter === "with_amount");
@@ -1496,6 +1769,7 @@ WEBAPP_HTML = """<!doctype html>
         currentSettings = Object.assign({}, currentSettings, data.settings || {});
         renderSettings();
         if (currentData) renderCards(filterCards(currentData.cards || []));
+        hapticNotify("success");
         await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
       } catch (_) {
         if (tg && tg.showAlert) tg.showAlert("Ошибка сохранения настроек");
@@ -1544,6 +1818,7 @@ WEBAPP_HTML = """<!doctype html>
           if (tg && tg.showAlert) tg.showAlert("Не удалось очистить чат");
           return;
         }
+        hapticNotify("success");
         if (tg && tg.showAlert) {
           tg.showAlert("Чат очищен");
         } else {
@@ -1567,6 +1842,7 @@ WEBAPP_HTML = """<!doctype html>
     }
 
     async function confirmDeleteCard(cardId) {
+      hapticNotify("warning");
       const ok = await askConfirm("Удалить эту карточку?");
       if (!ok) return;
       try {
@@ -1583,6 +1859,7 @@ WEBAPP_HTML = """<!doctype html>
           if (tg && tg.showAlert) tg.showAlert("Не удалось удалить карточку");
           return;
         }
+        hapticNotify("success");
         await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
       } catch (_) {
         if (tg && tg.showAlert) tg.showAlert("Ошибка удаления");
@@ -1591,6 +1868,7 @@ WEBAPP_HTML = """<!doctype html>
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => {
+        hapticImpact("medium");
         activeTab = btn.dataset.tab;
         if (activeTab === "ledger") ledgerFilter = "all";
         applyTab();
@@ -1684,6 +1962,7 @@ WEBAPP_HTML = """<!doctype html>
           if (tg && tg.showAlert) tg.showAlert(msg); else alert(msg);
           return;
         }
+        hapticNotify("success");
         closeEditModal();
         await new Promise(resolve => requestAnimationFrame(resolve));
         await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
@@ -1753,6 +2032,10 @@ WEBAPP_HTML = """<!doctype html>
       try {
         tg.ready();
         tg.expand();
+        applyTheme();
+        if (tg.onEvent) {
+          tg.onEvent("themeChanged", applyTheme);
+        }
       } catch (_) {}
 
       bootstrapped = true;
