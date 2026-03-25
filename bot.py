@@ -344,7 +344,7 @@ def build_webapp_url():
     return f"{WEBAPP_URL}/cabinet"
 
 
-async def set_webapp_menu_button(chat_id: int):
+async def set_webapp_menu_button(chat_id: int | None = None):
     webapp_url = build_webapp_url()
     if not webapp_url:
         return False
@@ -356,14 +356,15 @@ async def set_webapp_menu_button(chat_id: int):
                 web_app=WebAppInfo(url=webapp_url)
             )
         )
-        await bot.set_chat_menu_button(
-            chat_id=chat_id,
-            menu_button=MenuButtonWebApp(
-                text="👤",
-                web_app=WebAppInfo(url=webapp_url)
+        if chat_id:
+            await bot.set_chat_menu_button(
+                chat_id=chat_id,
+                menu_button=MenuButtonWebApp(
+                    text="👤",
+                    web_app=WebAppInfo(url=webapp_url)
+                )
             )
-        )
-        webapp_menu_set_chats.add(chat_id)
+            webapp_menu_set_chats.add(chat_id)
         return True
     except Exception:
         return False
@@ -2561,6 +2562,7 @@ async def fallback(message: Message):
 async def main():
     await init_db()
     await refresh_saved_main_messages()
+    await set_webapp_menu_button()
     web_runner = await start_webapp_server()
     try:
         await dp.start_polling(bot)
