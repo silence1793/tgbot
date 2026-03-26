@@ -844,8 +844,7 @@ WEBAPP_HTML = """<!doctype html>
       left: 0;
       right: 0;
       bottom: 0;
-      background: color-mix(in srgb, var(--bg) 88%, transparent);
-      backdrop-filter: blur(18px);
+      background: var(--bg);
       border-top: 1px solid var(--line);
       padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
       z-index: 20;
@@ -953,9 +952,13 @@ WEBAPP_HTML = """<!doctype html>
       gap: 0;
       cursor: pointer;
       list-style: none;
+      position: relative;
     }
     summary.top::-webkit-details-marker { display: none; }
-    .summary-left { display: contents; }
+    .summary-left {
+      display: block;
+      min-width: 0;
+    }
     .summary-right {
       position: absolute;
       top: 8px;
@@ -969,7 +972,6 @@ WEBAPP_HTML = """<!doctype html>
       border: 0;
       background: rgba(0,0,0,.38);
       color: #fff;
-      backdrop-filter: blur(8px);
       border-radius: 10px;
       width: 30px;
       height: 30px;
@@ -1022,7 +1024,6 @@ WEBAPP_HTML = """<!doctype html>
       padding: 5px 8px;
       border-radius: 999px;
       background: rgba(0,0,0,.5);
-      backdrop-filter: blur(4px);
       color: #fff;
       font-size: 10px;
       font-weight: 700;
@@ -1072,7 +1073,7 @@ WEBAPP_HTML = """<!doctype html>
       border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
       border-radius: 16px;
       padding: 12px;
-      box-shadow: var(--shadow);
+      box-shadow: var(--shadow-soft);
     }
     .ledger-top { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
     .plus { color: #065f46; font-weight: 700; }
@@ -1204,6 +1205,14 @@ WEBAPP_HTML = """<!doctype html>
     @media (max-width: 720px) {
       .wrap { padding: 14px 14px 102px; }
       .stats { grid-template-columns: 1fr 1fr; }
+      details.item,
+      .ledger-item,
+      .settings-card,
+      .search-input,
+      .head,
+      .tabs-shell {
+        box-shadow: none;
+      }
     }
   </style>
 </head>
