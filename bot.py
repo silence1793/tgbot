@@ -6,6 +6,7 @@ import hmac
 import hashlib
 import io
 import re
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl
@@ -45,6 +46,7 @@ NO_SEAL_PREFIX = "__NOSEAL__"
 WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
 WEBAPP_PORT = int(os.getenv("WEBAPP_PORT", "8080"))
 WEBAPP_URL = (os.getenv("WEBAPP_URL") or "").rstrip("/")
+PHOTO_STORAGE_DIR = os.getenv("PHOTO_STORAGE_DIR", "/var/lib/tgbot/uploads")
 
 chat_last_message_id: dict[int, int] = {}
 chat_cleanup_tasks: dict[int, asyncio.Task] = {}
@@ -920,7 +922,14 @@ WEBAPP_HTML = """<!doctype html>
     .stat.clickable { cursor: pointer; }
     .stat.clickable:active { transform: scale(0.99); }
     .stat.clickable.active { border-color: var(--accent); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent), var(--shadow); }
-    .cards-toolbar { margin-bottom: 4px; padding: 0 0 4px; }
+    .cards-toolbar {
+      margin-bottom: 4px;
+      padding: 0 0 4px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+    }
     .cards-toolbar .search-input { margin-bottom: 0; }
     .search-input {
       width: 100%;
@@ -936,6 +945,24 @@ WEBAPP_HTML = """<!doctype html>
     .search-input:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent), var(--shadow);
+    }
+    .create-btn {
+      width: 46px;
+      height: 46px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--card);
+      color: var(--accent);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: var(--shadow);
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .create-btn .icon-svg {
+      width: 18px;
+      height: 18px;
     }
     .grid { display: grid; gap: 12px; }
     .cards-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 4px 0 0; }
@@ -1115,6 +1142,40 @@ WEBAPP_HTML = """<!doctype html>
       color: var(--text);
       resize: vertical;
     }
+    .upload-box {
+      border: 1px dashed var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      background: color-mix(in srgb, var(--card) 70%, var(--bg));
+      display: grid;
+      gap: 10px;
+    }
+    .upload-preview {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      border-radius: 14px;
+      background: var(--placeholder-grad);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(255,255,255,.86);
+      font-size: 28px;
+    }
+    .upload-preview img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .upload-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .hidden-input {
+      display: none;
+    }
     .modal-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
     .m-btn {
       border: 1px solid var(--line);
@@ -1210,7 +1271,8 @@ WEBAPP_HTML = """<!doctype html>
       .settings-card,
       .search-input,
       .head,
-      .tabs-shell {
+      .tabs-shell,
+      .create-btn {
         box-shadow: none;
       }
     }
@@ -1240,6 +1302,11 @@ WEBAPP_HTML = """<!doctype html>
     <div id="cardsPage" class="page-view hidden">
       <div class="cards-toolbar">
         <input id="cardsSearch" class="search-input" type="text" placeholder="Поиск по карточкам" />
+        <button id="openCreateCard" class="create-btn" type="button" title="Создать карточку" aria-label="Создать карточку">
+          <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 5v14M5 12h14"></path>
+          </svg>
+        </button>
       </div>
       <div id="cardsList" class="grid cards-grid"></div>
     </div>
@@ -1357,6 +1424,41 @@ WEBAPP_HTML = """<!doctype html>
       </div>
     </div>
   </div>
+  <div id="createModalBackdrop" class="modal-backdrop" hidden>
+    <div class="modal">
+      <h3>Новая карточка</h3>
+      <div class="form-grid">
+        <div class="upload-box">
+          <div id="createPhotoPreview" class="upload-preview">?</div>
+          <div class="upload-actions">
+            <button id="pickCreatePhoto" class="m-btn" type="button">Выбрать фото</button>
+            <button id="clearCreatePhoto" class="m-btn" type="button">Убрать фото</button>
+          </div>
+          <input id="createPhotoInput" class="hidden-input" type="file" accept="image/*" />
+        </div>
+        <div class="field">
+          <label for="createSeal">Пломба</label>
+          <input id="createSeal" type="text" placeholder="Можно оставить пустым" />
+        </div>
+        <div class="field">
+          <label for="createAmount">Сумма</label>
+          <input id="createAmount" type="text" />
+        </div>
+        <div class="field">
+          <label for="createWork">Что сделал</label>
+          <textarea id="createWork" rows="3"></textarea>
+        </div>
+        <div class="field">
+          <label for="createPart">Стоимость детали</label>
+          <input id="createPart" type="text" placeholder="Необязательно" />
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="createCancel" class="m-btn" type="button">Отмена</button>
+        <button id="createSave" class="m-btn primary" type="button">Сохранить</button>
+      </div>
+    </div>
+  </div>
   <script>
     let tg = null;
     let activeTab = "ledger";
@@ -1368,7 +1470,10 @@ WEBAPP_HTML = """<!doctype html>
     let currentDateFrom = "";
     let currentDateTo = "";
     let editSaving = false;
+    let createSaving = false;
     let bootstrapped = false;
+    let createPhotoFile = null;
+    let createPhotoPreviewUrl = "";
     let currentSettings = {
       expense_percent: 40,
       show_seal: true,
@@ -1928,6 +2033,53 @@ WEBAPP_HTML = """<!doctype html>
       backdrop.hidden = true;
     }
 
+    function resetCreatePhotoPreview() {
+      const preview = document.getElementById("createPhotoPreview");
+      if (createPhotoPreviewUrl) {
+        URL.revokeObjectURL(createPhotoPreviewUrl);
+        createPhotoPreviewUrl = "";
+      }
+      createPhotoFile = null;
+      document.getElementById("createPhotoInput").value = "";
+      preview.innerHTML = "?";
+    }
+
+    function closeCreateModal() {
+      const backdrop = document.getElementById("createModalBackdrop");
+      createSaving = false;
+      document.getElementById("createSave").disabled = false;
+      document.getElementById("createSeal").value = "";
+      document.getElementById("createAmount").value = "";
+      document.getElementById("createWork").value = "";
+      document.getElementById("createPart").value = "";
+      resetCreatePhotoPreview();
+      backdrop.classList.remove("show");
+      backdrop.style.display = "none";
+      backdrop.hidden = true;
+    }
+
+    function openCreateModal() {
+      const backdrop = document.getElementById("createModalBackdrop");
+      closeCreateModal();
+      backdrop.hidden = false;
+      backdrop.style.display = "";
+      backdrop.classList.add("show");
+    }
+
+    function setCreatePhoto(file) {
+      const preview = document.getElementById("createPhotoPreview");
+      if (!file) {
+        resetCreatePhotoPreview();
+        return;
+      }
+      createPhotoFile = file;
+      if (createPhotoPreviewUrl) {
+        URL.revokeObjectURL(createPhotoPreviewUrl);
+      }
+      createPhotoPreviewUrl = URL.createObjectURL(file);
+      preview.innerHTML = `<img src="${createPhotoPreviewUrl}" alt="preview" />`;
+    }
+
     function openEditModal(cardId) {
       const cards = (currentData && currentData.cards) || [];
       const card = cards.find(c => Number(c.card_id) === Number(cardId));
@@ -1942,6 +2094,53 @@ WEBAPP_HTML = """<!doctype html>
       backdrop.hidden = false;
       backdrop.style.display = "";
       backdrop.classList.add("show");
+    }
+
+    async function saveCreateCard() {
+      if (createSaving) return;
+      const amount = document.getElementById("createAmount").value.trim();
+      const workDone = document.getElementById("createWork").value.trim();
+      if (!amount || !workDone) {
+        if (tg && tg.showAlert) tg.showAlert("Заполни сумму и что сделал");
+        return;
+      }
+
+      const saveBtn = document.getElementById("createSave");
+      createSaving = true;
+      saveBtn.disabled = true;
+
+      try {
+        const formData = new FormData();
+        formData.append("initData", (tg && tg.initData) || "");
+        formData.append("sealNumber", document.getElementById("createSeal").value.trim());
+        formData.append("amount", amount);
+        formData.append("workDone", workDone);
+        formData.append("partCost", document.getElementById("createPart").value.trim());
+        if (createPhotoFile) {
+          formData.append("photo", createPhotoFile, createPhotoFile.name || "repair-photo.jpg");
+        }
+
+        const resp = await fetch("/api/cabinet/card/create", {
+          method: "POST",
+          body: formData
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok) {
+          const msg = data && data.error === "duplicate_seal"
+            ? "Такая пломба уже есть в базе"
+            : "Не удалось создать карточку";
+          if (tg && tg.showAlert) tg.showAlert(msg); else alert(msg);
+          return;
+        }
+        hapticNotify("success");
+        closeCreateModal();
+        await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
+      } catch (_) {
+        if (tg && tg.showAlert) tg.showAlert("Ошибка создания карточки");
+      } finally {
+        createSaving = false;
+        saveBtn.disabled = false;
+      }
     }
 
     async function saveCardEdit() {
@@ -1989,8 +2188,29 @@ WEBAPP_HTML = """<!doctype html>
       e.stopPropagation();
       saveCardEdit();
     });
+    document.getElementById("openCreateCard").addEventListener("click", () => {
+      hapticImpact("medium");
+      openCreateModal();
+    });
+    document.getElementById("pickCreatePhoto").addEventListener("click", () => {
+      document.getElementById("createPhotoInput").click();
+    });
+    document.getElementById("clearCreatePhoto").addEventListener("click", resetCreatePhotoPreview);
+    document.getElementById("createPhotoInput").addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+      setCreatePhoto(file);
+    });
+    document.getElementById("createCancel").addEventListener("click", closeCreateModal);
+    document.getElementById("createSave").addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      saveCreateCard();
+    });
     document.getElementById("editModalBackdrop").addEventListener("click", (e) => {
       if (e.target.id === "editModalBackdrop") closeEditModal();
+    });
+    document.getElementById("createModalBackdrop").addEventListener("click", (e) => {
+      if (e.target.id === "createModalBackdrop") closeCreateModal();
     });
     document.getElementById("openDateRange").addEventListener("click", openRangeModal);
     document.getElementById("rangeCancel").addEventListener("click", closeRangeModal);
@@ -2380,6 +2600,79 @@ async def cabinet_update_card_api(request: web.Request):
     return web.json_response({"ok": True})
 
 
+async def cabinet_create_card_api(request: web.Request):
+    try:
+        reader = await request.multipart()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_form"}, status=400)
+
+    fields: dict[str, str] = {}
+    upload_payload: bytes | None = None
+    upload_filename = ""
+
+    while True:
+        part = await reader.next()
+        if part is None:
+            break
+        name = (part.name or "").strip()
+        if not name:
+            continue
+        if name == "photo":
+            upload_filename = part.filename or "repair-photo.jpg"
+            upload_payload = await part.read(decode=False)
+        else:
+            fields[name] = (await part.text()).strip()
+
+    user_id = validate_webapp_init_data(fields.get("initData", ""))
+    if not user_id:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    seal_number = (fields.get("sealNumber") or "").strip()
+    amount = (fields.get("amount") or "").strip()
+    work_done = (fields.get("workDone") or "").strip()
+    part_cost = (fields.get("partCost") or "").strip() or None
+
+    if not amount or not work_done:
+        return web.json_response({"ok": False, "error": "invalid_fields"}, status=400)
+
+    if seal_number and not is_virtual_seal(seal_number):
+        if await seal_exists_anywhere(user_id, seal_number):
+            return web.json_response({"ok": False, "error": "duplicate_seal"}, status=409)
+    elif not seal_number:
+        seal_number = make_virtual_seal()
+
+    photo_ref: str | None = None
+    if upload_payload:
+        ext = Path(upload_filename).suffix.lower()
+        if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+            ext = ".jpg"
+        target_dir = Path(PHOTO_STORAGE_DIR)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_name = f"repair_{user_id}_{uuid.uuid4().hex}{ext}"
+        target_path = target_dir / file_name
+        with open(target_path, "wb") as f:
+            f.write(upload_payload)
+        photo_ref = str(target_path)
+
+    card_id = await save_repair(
+        user_id=user_id,
+        photo_file_id=photo_ref,
+        seal_number=seal_number,
+        work_done=work_done,
+        amount=amount,
+        part_cost=part_cost,
+    )
+    if not is_virtual_seal(seal_number):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
+                INSERT OR IGNORE INTO repair_seal_aliases (parent_repair_id, user_id, seal_number, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (card_id, user_id, seal_number, today_str()))
+            await db.commit()
+
+    return web.json_response({"ok": True, "card_id": card_id})
+
+
 async def cabinet_delete_card_api(request: web.Request):
     try:
         body = await request.json()
@@ -2407,6 +2700,7 @@ async def start_webapp_server():
     app.router.add_get("/cabinet", cabinet_page)
     app.router.add_post("/api/cabinet/repairs", cabinet_repairs_api)
     app.router.add_post("/api/cabinet/photo", cabinet_photo_api)
+    app.router.add_post("/api/cabinet/card/create", cabinet_create_card_api)
     app.router.add_post("/api/cabinet/card/update", cabinet_update_card_api)
     app.router.add_post("/api/cabinet/card/delete", cabinet_delete_card_api)
     app.router.add_post("/api/cabinet/settings", cabinet_settings_api)
