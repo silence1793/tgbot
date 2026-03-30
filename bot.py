@@ -144,7 +144,7 @@ def normalize_expense_percent(value) -> int:
         percent = int(value)
     except Exception:
         return DEFAULT_USER_SETTINGS["expense_percent"]
-    if percent not in (30, 35, 40, 45, 50):
+    if percent not in (0, 30, 35, 40, 45, 50):
         return DEFAULT_USER_SETTINGS["expense_percent"]
     return percent
 
@@ -1754,7 +1754,7 @@ WEBAPP_HTML = """<!doctype html>
       const host = document.getElementById("expensePercentButtons");
       if (!host) return;
       const current = Number(currentSettings.expense_percent || 40);
-      host.innerHTML = [30, 35, 40, 45, 50].map(percent => `
+      host.innerHTML = [0, 30, 35, 40, 45, 50].map(percent => `
         <button class="chip-btn ${current === percent ? "active" : ""}" data-expense-percent="${percent}" type="button">${percent}%</button>
       `).join("");
       host.querySelectorAll("[data-expense-percent]").forEach(btn => {
