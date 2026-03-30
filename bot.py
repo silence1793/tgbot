@@ -1416,6 +1416,7 @@ WEBAPP_HTML = """<!doctype html>
         <div class="settings-desc">Кто сделал этот кабинет и как мы с тобой его собираем.</div>
         <div class="export-row">
           <button id="openAbout" class="m-btn" type="button">Открыть</button>
+          <button id="openSupport" class="m-btn" type="button">Поддержка</button>
         </div>
       </div>
       <div class="settings-card">
@@ -2166,6 +2167,23 @@ WEBAPP_HTML = """<!doctype html>
       });
     }
 
+    function openSupportChat() {
+      const supportLink = "https://t.me/rahman_gamzaev";
+      try {
+        if (tg && tg.openTelegramLink) {
+          tg.openTelegramLink(supportLink);
+          return;
+        }
+      } catch (_) {}
+      try {
+        if (tg && tg.openLink) {
+          tg.openLink(supportLink);
+          return;
+        }
+      } catch (_) {}
+      window.open(supportLink, "_blank");
+    }
+
     async function confirmDeleteCard(cardId) {
       hapticNotify("warning");
       const ok = await askConfirm("Удалить эту карточку?");
@@ -2450,6 +2468,10 @@ WEBAPP_HTML = """<!doctype html>
     document.getElementById("openAbout").addEventListener("click", () => {
       hapticImpact("medium");
       openAboutModal();
+    });
+    document.getElementById("openSupport").addEventListener("click", () => {
+      hapticImpact("medium");
+      openSupportChat();
     });
     document.getElementById("aboutClose").addEventListener("click", closeAboutModal);
     document.getElementById("aboutModalBackdrop").addEventListener("click", (e) => {
