@@ -1228,7 +1228,7 @@ WEBAPP_HTML = """<!doctype html>
       border: 1px solid var(--line);
       border-radius: 14px;
       padding: 12px;
-      font-size: 14px;
+      font-size: 16px;
       font-family: inherit;
       background: var(--card);
       color: var(--text);
