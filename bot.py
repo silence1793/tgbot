@@ -614,8 +614,95 @@ def validate_webapp_init_data(init_data: str):
     return user_id
 
 
-async def get_cabinet_dashboard(user_id: int, period_days: int, date_from=None, date_to=None):
+def build_cabinet_period_label(period_days: int, date_from=None, date_to=None) -> str:
+    if date_from or date_to:
+        from_label = date_from.strftime("%d.%m.%Y") if date_from else "..."
+        to_label = date_to.strftime("%d.%m.%Y") if date_to else "..."
+        return f"{from_label} - {to_label}"
+    return {7: "1 неделя", 30: "1 месяц", 90: "3 месяца"}[period_days]
+
+
+async def get_cabinet_overview(user_id: int, period_days: int, date_from=None, date_to=None):
     settings = await get_user_settings(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT COUNT(*)
+            FROM repairs
+            WHERE user_id = ?
+        """, (user_id,))
+        count_row = await cursor.fetchone()
+
+        cursor = await db.execute("""
+            SELECT
+                r.created_at,
+                r.amount,
+                r.work_done,
+                r.part_cost,
+                1 AS has_amount_marker
+            FROM repairs r
+            WHERE r.user_id = ?
+
+            UNION ALL
+
+            SELECT
+                h.created_at,
+                h.amount,
+                h.work_done,
+                h.part_cost,
+                1 AS has_amount_marker
+            FROM repair_history h
+            JOIN repairs r ON r.id = h.parent_repair_id
+            WHERE r.user_id = ?
+
+            ORDER BY created_at DESC
+        """, (user_id, user_id))
+        rows = await cursor.fetchall()
+
+    card_count = int((count_row or [0])[0] or 0)
+    gross = 0.0
+    details_total = 0.0
+    transactions_count = 0
+    ledger_items = []
+
+    for row in rows:
+        created_at, amount, work_done, part_cost, _has_amount_marker = row
+        if matches_cabinet_filter(created_at, period_days, date_from, date_to):
+            amount_num = parse_money(amount)
+            part_num = parse_money(part_cost)
+            if has_explicit_amount(amount):
+                gross += amount_num
+                details_total += part_num
+                transactions_count += 1
+            if has_explicit_amount(amount) or part_num > 0:
+                ledger_items.append({
+                    "created_at": created_at,
+                    "work_done": (work_done or "-").strip() or "-",
+                    "plus_amount": format_money(amount_num) if has_explicit_amount(amount) else "0",
+                    "minus_part": format_money(part_num),
+                    "net": format_money(amount_num - part_num),
+                    "has_amount": has_explicit_amount(amount)
+                })
+
+    ledger_items.sort(key=lambda x: (parse_card_date(x["created_at"]) or datetime.min), reverse=True)
+
+    net_without_parts = gross - details_total
+    expense_percent = normalize_expense_percent(settings.get("expense_percent"))
+    expense_percent_cost = net_without_parts * (expense_percent / 100)
+    net_after_percent = net_without_parts - expense_percent_cost
+
+    summary = {
+        "gross_revenue": format_money(gross),
+        "parts_cost": format_money(details_total),
+        "net_without_parts": format_money(net_without_parts),
+        "expense_percent": expense_percent,
+        "expense_percent_cost": format_money(expense_percent_cost),
+        "net_after_percent": format_money(net_after_percent),
+        "transactions_count": transactions_count
+    }
+    return card_count, summary, ledger_items, settings
+
+
+async def get_cabinet_cards(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
             SELECT
@@ -650,11 +737,6 @@ async def get_cabinet_dashboard(user_id: int, period_days: int, date_from=None, 
         rows = await cursor.fetchall()
 
     cards_map = {}
-    gross = 0.0
-    details_total = 0.0
-    transactions_count = 0
-    ledger_items = []
-
     for row in rows:
         card_id, created_at, seal_number, amount, work_done, part_cost, photo_file_id, sort_id = row
         if card_id not in cards_map:
@@ -686,46 +768,13 @@ async def get_cabinet_dashboard(user_id: int, period_days: int, date_from=None, 
         if seal_display not in cards_map[card_id]["all_seals"]:
             cards_map[card_id]["all_seals"].append(seal_display)
 
-        if matches_cabinet_filter(created_at, period_days, date_from, date_to):
-            amount_num = parse_money(amount)
-            part_num = parse_money(part_cost)
-            if has_explicit_amount(amount):
-                gross += amount_num
-                details_total += part_num
-                transactions_count += 1
-            if has_explicit_amount(amount) or part_num > 0:
-                ledger_items.append({
-                    "created_at": created_at,
-                    "work_done": (work_done or "-").strip() or "-",
-                    "plus_amount": format_money(amount_num) if has_explicit_amount(amount) else "0",
-                    "minus_part": format_money(part_num),
-                    "net": format_money(amount_num - part_num),
-                    "has_amount": has_explicit_amount(amount)
-                })
-
     cards = list(cards_map.values())
     for card in cards:
         latest = card.get("latest_seal_number") or "—"
         rest = [s for s in card.get("all_seals", []) if s != latest]
         card["all_seals_view"] = [latest] + rest
     cards.sort(key=lambda x: x["card_id"], reverse=True)
-    ledger_items.sort(key=lambda x: (parse_card_date(x["created_at"]) or datetime.min), reverse=True)
-
-    net_without_parts = gross - details_total
-    expense_percent = normalize_expense_percent(settings.get("expense_percent"))
-    expense_percent_cost = net_without_parts * (expense_percent / 100)
-    net_after_percent = net_without_parts - expense_percent_cost
-
-    summary = {
-        "gross_revenue": format_money(gross),
-        "parts_cost": format_money(details_total),
-        "net_without_parts": format_money(net_without_parts),
-        "expense_percent": expense_percent,
-        "expense_percent_cost": format_money(expense_percent_cost),
-        "net_after_percent": format_money(net_after_percent),
-        "transactions_count": transactions_count
-    }
-    return cards, summary, ledger_items, settings
+    return cards
 
 
 WEBAPP_HTML = """<!doctype html>
@@ -749,6 +798,8 @@ WEBAPP_HTML = """<!doctype html>
       --shadow-soft: 0 2px 8px rgba(0,0,0,.12);
       --chip-bg: rgba(118,118,128,.12);
       --placeholder-grad: linear-gradient(135deg, #E5E5EA 0%, #D1D1D6 100%);
+      --app-height: 100dvh;
+      --keyboard-offset: 0px;
     }
     body.dark-theme {
       --bg: var(--tg-theme-secondary-bg-color, #000000);
@@ -965,7 +1016,23 @@ WEBAPP_HTML = """<!doctype html>
       height: 18px;
     }
     .grid { display: grid; gap: 12px; }
-    .cards-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 4px 0 0; }
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(2,minmax(0,1fr));
+      gap: 12px;
+      padding: 4px 0 0;
+      align-content: start;
+    }
+    .cards-grid.is-empty {
+      grid-template-columns: 1fr;
+      min-height: calc(100vh - 255px - env(safe-area-inset-bottom));
+      place-items: center;
+      padding-top: 0;
+    }
+    .cards-grid.is-empty > .empty {
+      padding: 0;
+      text-align: center;
+    }
     .hidden { display: none; }
     details.item {
       background: var(--card);
@@ -1116,19 +1183,44 @@ WEBAPP_HTML = """<!doctype html>
       z-index: 40;
       padding: 16px;
       pointer-events: none;
+      overflow: auto;
+      overscroll-behavior: contain;
     }
     .modal-backdrop.show { display: flex; }
     .modal-backdrop.show { pointer-events: auto; }
     .modal {
       width: 100%;
       max-width: 460px;
+      max-height: calc(var(--app-height) - 32px - var(--keyboard-offset));
       background: var(--card);
       border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
       border-radius: 20px;
       box-shadow: 0 20px 45px rgba(15,23,42,.22);
       padding: 16px;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
     }
     .modal h3 { margin: 0 0 10px; font-size: 18px; }
+    .about-copy { display: grid; gap: 12px; }
+    .about-block {
+      border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+      border-radius: 16px;
+      padding: 12px;
+      background: color-mix(in srgb, var(--card) 72%, var(--bg));
+      display: grid;
+      gap: 6px;
+    }
+    .about-block h4 {
+      margin: 0;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+    }
+    .about-block p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
     .form-grid { display: grid; gap: 10px; }
     .field { display: grid; gap: 6px; }
     .field label { color: var(--muted); font-size: 12px; }
@@ -1150,23 +1242,12 @@ WEBAPP_HTML = """<!doctype html>
       display: grid;
       gap: 10px;
     }
-    .upload-preview {
-      width: 100%;
-      aspect-ratio: 4 / 3;
-      border-radius: 14px;
-      background: var(--placeholder-grad);
-      overflow: hidden;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: rgba(255,255,255,.86);
-      font-size: 28px;
-    }
-    .upload-preview img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
+    .upload-name {
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+      word-break: break-word;
     }
     .upload-actions {
       display: flex;
@@ -1176,7 +1257,17 @@ WEBAPP_HTML = """<!doctype html>
     .hidden-input {
       display: none;
     }
-    .modal-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+    .modal-actions {
+      margin-top: 12px;
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      position: sticky;
+      bottom: -16px;
+      background: var(--card);
+      padding-top: 12px;
+      padding-bottom: 2px;
+    }
     .m-btn {
       border: 1px solid var(--line);
       background: var(--card);
@@ -1266,6 +1357,15 @@ WEBAPP_HTML = """<!doctype html>
     @media (max-width: 720px) {
       .wrap { padding: 14px 14px 102px; }
       .stats { grid-template-columns: 1fr 1fr; }
+      .modal-backdrop {
+        align-items: flex-start;
+        padding: 12px 12px calc(12px + env(safe-area-inset-bottom) + var(--keyboard-offset));
+      }
+      .modal {
+        margin-top: 8px;
+        max-width: none;
+        max-height: calc(var(--app-height) - 20px - var(--keyboard-offset));
+      }
       details.item,
       .ledger-item,
       .settings-card,
@@ -1311,6 +1411,13 @@ WEBAPP_HTML = """<!doctype html>
       <div id="cardsList" class="grid cards-grid"></div>
     </div>
     <div id="settingsView" class="grid hidden">
+      <div class="settings-card">
+        <div class="settings-title">О нас</div>
+        <div class="settings-desc">Кто сделал этот кабинет и как мы с тобой его собираем.</div>
+        <div class="export-row">
+          <button id="openAbout" class="m-btn" type="button">Открыть</button>
+        </div>
+      </div>
       <div class="settings-card">
         <div class="settings-title">Процент расходов</div>
         <div class="settings-desc">Выбери, сколько процентов вычитать из чистой выручки.</div>
@@ -1429,7 +1536,7 @@ WEBAPP_HTML = """<!doctype html>
       <h3>Новая карточка</h3>
       <div class="form-grid">
         <div class="upload-box">
-          <div id="createPhotoPreview" class="upload-preview">?</div>
+          <div id="createPhotoName" class="upload-name">Фото не выбрано</div>
           <div class="upload-actions">
             <button id="pickCreatePhoto" class="m-btn" type="button">Выбрать фото</button>
             <button id="clearCreatePhoto" class="m-btn" type="button">Убрать фото</button>
@@ -1459,11 +1566,32 @@ WEBAPP_HTML = """<!doctype html>
       </div>
     </div>
   </div>
+  <div id="aboutModalBackdrop" class="modal-backdrop" hidden>
+    <div class="modal">
+      <h3>О нас</h3>
+      <div class="about-copy">
+        <div class="about-block">
+          <h4>О тебе</h4>
+          <p>Ты автор этого проекта и человек, который задает ему направление. Именно ты решаешь, каким должен быть бот, какие сценарии реально помогают в работе и какие улучшения стоит внедрять в первую очередь.</p>
+          <p>Этот кабинет появился потому, что у тебя есть практичный взгляд на работу с ремонтами: меньше лишних действий, быстрее доступ к карточкам, понятнее учет и удобнее ежедневные задачи.</p>
+        </div>
+        <div class="about-block">
+          <h4>Обо мне</h4>
+          <p>Я Codex, твой AI-помощник по разработке. Помогаю превращать идеи в рабочий код, дорабатывать интерфейс, ускорять изменения и аккуратно внедрять новые функции без лишней рутины.</p>
+          <p>Этот раздел, как и другие улучшения в проекте, мы делаем вместе: ты приносишь замысел и понимание продукта, а я помогаю быстро и надежно довести его до рабочего состояния.</p>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="aboutClose" class="m-btn primary" type="button">Закрыть</button>
+      </div>
+    </div>
+  </div>
   <script>
     let tg = null;
     let activeTab = "ledger";
     let ledgerFilter = "all";
     let currentData = null;
+    let currentCards = [];
     let currentPeriodDays = 7;
     let editingCardId = null;
     let currentCardQuery = "";
@@ -1474,6 +1602,8 @@ WEBAPP_HTML = """<!doctype html>
     let bootstrapped = false;
     let createPhotoFile = null;
     let createPhotoPreviewUrl = "";
+    let cardsLoaded = false;
+    let cardsLoadPromise = null;
     let currentSettings = {
       expense_percent: 40,
       show_seal: true,
@@ -1515,6 +1645,21 @@ WEBAPP_HTML = """<!doctype html>
       } catch (_) {}
     }
 
+    function updateViewportMetrics() {
+      const root = document.documentElement;
+      const vv = window.visualViewport;
+      if (!root) return;
+      const viewportHeight = vv ? vv.height : window.innerHeight;
+      root.style.setProperty("--app-height", `${Math.max(320, Math.round(viewportHeight))}px`);
+
+      if (vv) {
+        const keyboardOffset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+        root.style.setProperty("--keyboard-offset", `${keyboardOffset}px`);
+      } else {
+        root.style.setProperty("--keyboard-offset", "0px");
+      }
+    }
+
     function applyTheme() {
       const root = document.documentElement;
       const body = document.body;
@@ -1541,6 +1686,12 @@ WEBAPP_HTML = """<!doctype html>
     function showMetaError(text) {
       const meta = document.getElementById("meta");
       if (meta) meta.textContent = text;
+    }
+
+    function renderMeta() {
+      const meta = document.getElementById("meta");
+      if (!meta || !currentData) return;
+      meta.textContent = "Карточек: " + (currentData.count || 0) + " · Период: " + (currentData.period_label || "—");
     }
 
     function money(v) {
@@ -1680,14 +1831,23 @@ WEBAPP_HTML = """<!doctype html>
       } catch (_) {}
     }
 
+    function renderCardsLoading(text = "Загружаю карточки...") {
+      const list = document.getElementById("cardsList");
+      if (!list) return;
+      list.classList.add("is-empty");
+      list.innerHTML = `<div class="empty">${escapeHtml(text)}</div>`;
+    }
+
     function renderCards(cards) {
       const list = document.getElementById("cardsList");
+      list.classList.toggle("is-empty", !cards.length);
       if (!cards.length) {
         list.innerHTML = currentCardQuery
           ? '<div class="empty">По этому запросу ничего не найдено</div>'
           : '<div class="empty">Пока нет записей</div>';
         return;
       }
+      list.classList.remove("is-empty");
 
       const showSeal = Boolean(currentSettings.show_seal);
       const showAmount = Boolean(currentSettings.show_amount);
@@ -1829,6 +1989,9 @@ WEBAPP_HTML = """<!doctype html>
       document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === activeTab));
       const opsCard = document.getElementById("opsWithAmountCard");
       if (opsCard) opsCard.classList.toggle("active", activeTab === "ledger" && ledgerFilter === "with_amount");
+      if (activeTab === "cards" && !cardsLoaded) {
+        renderCardsLoading();
+      }
     }
 
     function updatePresetButtons(activePeriod = null, customActive = false) {
@@ -1856,13 +2019,62 @@ WEBAPP_HTML = """<!doctype html>
       const data = await resp.json();
       currentData = data;
       currentSettings = Object.assign({}, currentSettings, data.settings || {});
-      const meta = document.getElementById("meta");
-      meta.textContent = "Карточек: " + data.count + " · Период: " + data.period_label;
+      renderMeta();
       renderSummary(data.summary);
       renderSettings();
-      renderCards(filterCards(data.cards || []));
       renderLedger(data.ledger || []);
+      if (cardsLoaded && activeTab === "cards") {
+        renderCards(filterCards(currentCards || []));
+      }
       applyTab();
+    }
+
+    async function loadCards(force = false) {
+      if (cardsLoadPromise) return cardsLoadPromise;
+      if (cardsLoaded && !force) {
+        if (activeTab === "cards") renderCards(filterCards(currentCards || []));
+        return currentCards;
+      }
+
+      renderCardsLoading();
+      cardsLoadPromise = (async () => {
+        const resp = await fetch("/api/cabinet/cards", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ initData: (tg && tg.initData) || "" })
+        });
+
+        if (!resp.ok) {
+          throw new Error("cards_load_failed");
+        }
+
+        const data = await resp.json();
+        currentCards = data.cards || [];
+        cardsLoaded = true;
+        if (activeTab === "cards") {
+          renderCards(filterCards(currentCards));
+        }
+        return currentCards;
+      })().catch((error) => {
+        if (activeTab === "cards") {
+          renderCardsLoading("Ошибка загрузки карточек");
+        }
+        throw error;
+      }).finally(() => {
+        cardsLoadPromise = null;
+      });
+
+      return cardsLoadPromise;
+    }
+
+    async function refreshCabinetData(reloadCards = false) {
+      await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
+      if (reloadCards) {
+        cardsLoaded = false;
+      }
+      if (cardsLoaded || activeTab === "cards") {
+        await loadCards(reloadCards);
+      }
     }
 
     async function saveSettings(patch) {
@@ -1882,7 +2094,7 @@ WEBAPP_HTML = """<!doctype html>
         }
         currentSettings = Object.assign({}, currentSettings, data.settings || {});
         renderSettings();
-        if (currentData) renderCards(filterCards(currentData.cards || []));
+        if (cardsLoaded) renderCards(filterCards(currentCards || []));
         hapticNotify("success");
         await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
       } catch (_) {
@@ -1974,7 +2186,7 @@ WEBAPP_HTML = """<!doctype html>
           return;
         }
         hapticNotify("success");
-        await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
+        await refreshCabinetData(true);
       } catch (_) {
         if (tg && tg.showAlert) tg.showAlert("Ошибка удаления");
       }
@@ -1986,8 +2198,11 @@ WEBAPP_HTML = """<!doctype html>
         activeTab = btn.dataset.tab;
         if (activeTab === "ledger") ledgerFilter = "all";
         applyTab();
+        if (activeTab === "cards") {
+          loadCards().catch(() => {});
+          return;
+        }
         if (currentData) {
-          renderCards(filterCards(currentData.cards || []));
           renderLedger(currentData.ledger || []);
         }
       });
@@ -2034,14 +2249,14 @@ WEBAPP_HTML = """<!doctype html>
     }
 
     function resetCreatePhotoPreview() {
-      const preview = document.getElementById("createPhotoPreview");
+      const preview = document.getElementById("createPhotoName");
       if (createPhotoPreviewUrl) {
         URL.revokeObjectURL(createPhotoPreviewUrl);
         createPhotoPreviewUrl = "";
       }
       createPhotoFile = null;
       document.getElementById("createPhotoInput").value = "";
-      preview.innerHTML = "?";
+      preview.textContent = "Фото не выбрано";
     }
 
     function closeCreateModal() {
@@ -2058,6 +2273,13 @@ WEBAPP_HTML = """<!doctype html>
       backdrop.hidden = true;
     }
 
+    function closeAboutModal() {
+      const backdrop = document.getElementById("aboutModalBackdrop");
+      backdrop.classList.remove("show");
+      backdrop.style.display = "none";
+      backdrop.hidden = true;
+    }
+
     function openCreateModal() {
       const backdrop = document.getElementById("createModalBackdrop");
       closeCreateModal();
@@ -2066,8 +2288,15 @@ WEBAPP_HTML = """<!doctype html>
       backdrop.classList.add("show");
     }
 
+    function openAboutModal() {
+      const backdrop = document.getElementById("aboutModalBackdrop");
+      backdrop.hidden = false;
+      backdrop.style.display = "";
+      backdrop.classList.add("show");
+    }
+
     function setCreatePhoto(file) {
-      const preview = document.getElementById("createPhotoPreview");
+      const preview = document.getElementById("createPhotoName");
       if (!file) {
         resetCreatePhotoPreview();
         return;
@@ -2076,12 +2305,12 @@ WEBAPP_HTML = """<!doctype html>
       if (createPhotoPreviewUrl) {
         URL.revokeObjectURL(createPhotoPreviewUrl);
       }
-      createPhotoPreviewUrl = URL.createObjectURL(file);
-      preview.innerHTML = `<img src="${createPhotoPreviewUrl}" alt="preview" />`;
+      createPhotoPreviewUrl = "";
+      preview.textContent = file.name || "Фото выбрано";
     }
 
     function openEditModal(cardId) {
-      const cards = (currentData && currentData.cards) || [];
+      const cards = currentCards || [];
       const card = cards.find(c => Number(c.card_id) === Number(cardId));
       if (!card || !card.stages || !card.stages.length) return;
       const latest = card.stages[card.stages.length - 1];
@@ -2134,7 +2363,7 @@ WEBAPP_HTML = """<!doctype html>
         }
         hapticNotify("success");
         closeCreateModal();
-        await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
+        await refreshCabinetData(true);
       } catch (_) {
         if (tg && tg.showAlert) tg.showAlert("Ошибка создания карточки");
       } finally {
@@ -2173,7 +2402,7 @@ WEBAPP_HTML = """<!doctype html>
         hapticNotify("success");
         closeEditModal();
         await new Promise(resolve => requestAnimationFrame(resolve));
-        await loadData(currentPeriodDays, currentDateFrom, currentDateTo);
+        await refreshCabinetData(true);
       } catch (_) {
         if (tg && tg.showAlert) tg.showAlert("Ошибка сохранения");
       } finally {
@@ -2206,11 +2435,26 @@ WEBAPP_HTML = """<!doctype html>
       e.stopPropagation();
       saveCreateCard();
     });
+    document.querySelectorAll("#createModalBackdrop input, #createModalBackdrop textarea").forEach(field => {
+      field.addEventListener("focus", () => {
+        setTimeout(() => {
+          field.scrollIntoView({ block: "center", behavior: "smooth" });
+        }, 180);
+      });
+    });
     document.getElementById("editModalBackdrop").addEventListener("click", (e) => {
       if (e.target.id === "editModalBackdrop") closeEditModal();
     });
     document.getElementById("createModalBackdrop").addEventListener("click", (e) => {
       if (e.target.id === "createModalBackdrop") closeCreateModal();
+    });
+    document.getElementById("openAbout").addEventListener("click", () => {
+      hapticImpact("medium");
+      openAboutModal();
+    });
+    document.getElementById("aboutClose").addEventListener("click", closeAboutModal);
+    document.getElementById("aboutModalBackdrop").addEventListener("click", (e) => {
+      if (e.target.id === "aboutModalBackdrop") closeAboutModal();
     });
     document.getElementById("openDateRange").addEventListener("click", openRangeModal);
     document.getElementById("rangeCancel").addEventListener("click", closeRangeModal);
@@ -2239,7 +2483,7 @@ WEBAPP_HTML = """<!doctype html>
     });
     document.getElementById("cardsSearch").addEventListener("input", (e) => {
       currentCardQuery = e.target.value || "";
-      if (currentData) renderCards(filterCards(currentData.cards || []));
+      if (cardsLoaded) renderCards(filterCards(currentCards || []));
     });
     document.getElementById("exportJson").addEventListener("click", () => exportDatabase("json"));
     document.getElementById("exportCsv").addEventListener("click", () => exportDatabase("csv"));
@@ -2262,10 +2506,17 @@ WEBAPP_HTML = """<!doctype html>
         tg.ready();
         tg.expand();
         applyTheme();
+        updateViewportMetrics();
         if (tg.onEvent) {
           tg.onEvent("themeChanged", applyTheme);
         }
       } catch (_) {}
+
+      window.addEventListener("resize", updateViewportMetrics);
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", updateViewportMetrics);
+        window.visualViewport.addEventListener("scroll", updateViewportMetrics);
+      }
 
       bootstrapped = true;
       loadData(7).catch(() => {
@@ -2361,22 +2612,33 @@ async def cabinet_repairs_api(request: web.Request):
     if date_from and date_to and date_from > date_to:
         date_from, date_to = date_to, date_from
 
-    cards, summary, ledger_items, settings = await get_cabinet_dashboard(user_id, period_days, date_from, date_to)
-    if date_from or date_to:
-        from_label = date_from.strftime("%d.%m.%Y") if date_from else "..."
-        to_label = date_to.strftime("%d.%m.%Y") if date_to else "..."
-        period_label = f"{from_label} - {to_label}"
-    else:
-        period_label = {7: "1 неделя", 30: "1 месяц", 90: "3 месяца"}[period_days]
+    card_count, summary, ledger_items, settings = await get_cabinet_overview(user_id, period_days, date_from, date_to)
+    return web.json_response({
+        "ok": True,
+        "count": card_count,
+        "period_days": period_days,
+        "period_label": build_cabinet_period_label(period_days, date_from, date_to),
+        "summary": summary,
+        "ledger": ledger_items,
+        "settings": settings
+    })
+
+
+async def cabinet_cards_api(request: web.Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
+
+    user_id = validate_webapp_init_data((body or {}).get("initData", ""))
+    if not user_id:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    cards = await get_cabinet_cards(user_id)
     return web.json_response({
         "ok": True,
         "count": len(cards),
-        "period_days": period_days,
-        "period_label": period_label,
-        "summary": summary,
-        "cards": cards,
-        "ledger": ledger_items,
-        "settings": settings
+        "cards": cards
     })
 
 
@@ -2699,6 +2961,7 @@ async def start_webapp_server():
     app = web.Application()
     app.router.add_get("/cabinet", cabinet_page)
     app.router.add_post("/api/cabinet/repairs", cabinet_repairs_api)
+    app.router.add_post("/api/cabinet/cards", cabinet_cards_api)
     app.router.add_post("/api/cabinet/photo", cabinet_photo_api)
     app.router.add_post("/api/cabinet/card/create", cabinet_create_card_api)
     app.router.add_post("/api/cabinet/card/update", cabinet_update_card_api)
