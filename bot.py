@@ -2762,6 +2762,27 @@ async def cabinet_export_api(request: web.Request):
     )
 
 
+async def cabinet_db_backup_api(request: web.Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
+
+    user_id = validate_webapp_init_data((body or {}).get("initData", ""))
+    if not user_id:
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    db_file = Path(DB_PATH)
+    if not db_file.exists() or not db_file.is_file():
+        return web.json_response({"ok": False, "error": "db_not_found"}, status=404)
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return web.FileResponse(
+        path=db_file,
+        headers={"Content-Disposition": f'attachment; filename="repairs-db-backup-{stamp}.db"'}
+    )
+
+
 async def cabinet_clear_chat_api(request: web.Request):
     try:
         body = await request.json()
@@ -2989,6 +3010,7 @@ async def start_webapp_server():
     app.router.add_post("/api/cabinet/card/delete", cabinet_delete_card_api)
     app.router.add_post("/api/cabinet/settings", cabinet_settings_api)
     app.router.add_post("/api/cabinet/export", cabinet_export_api)
+    app.router.add_post("/api/cabinet/db-backup", cabinet_db_backup_api)
     app.router.add_post("/api/cabinet/clear-chat", cabinet_clear_chat_api)
     runner = web.AppRunner(app)
     await runner.setup()
